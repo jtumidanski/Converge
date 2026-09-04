@@ -131,6 +131,7 @@ func (m *Manager) Cleanup(ctx context.Context, mirrorPath, id string) error {
 	if mirrorPath != "" {
 		if _, statErr := os.Stat(filepath.Join(mirrorPath, "HEAD")); statErr == nil {
 			unlock := m.locks.Lock(mirrorPath)
+			defer unlock()
 			steps := []struct {
 				name string
 				args []string
@@ -141,10 +142,28 @@ func (m *Manager) Cleanup(ctx context.Context, mirrorPath, id string) error {
 			}
 			for _, st := range steps {
 				if _, runErr := m.runner.Run(ctx, gitx.Spec{Dir: mirrorPath, Args: st.args, Category: gitx.CategoryCleanup, Session: id}); runErr != nil {
-					m.log.Debug("cleanup step failed", slog.String("session", id), slog.String("step", st.name), slog.String("error", runErr.Error()))
+					// Every git step here is intentionally best-effort and the
+					// sequence continues regardless (FR-9.1, FR-9.4): a session
+					// directory that was already removed makes every following
+					// step fail "not found" on a routine repeat Cleanup call.
+					// The level reflects that: if the session directory no
+					// longer exists this is very likely such a repeat call, so
+					// log at Debug; otherwise this is a real, unexplained
+					// failure of a step that should have succeeded, so log at
+					// Warn. runErr.Error() is safe here — gitx.ExitError and the
+					// wrapped errors returned by gitx.Runner format only
+					// category/exit-code/context text, never raw stderr or
+					// credentials.
+					level := slog.LevelWarn
+					if !exists {
+						level = slog.LevelDebug
+					}
+					m.log.Log(ctx, level, "cleanup step failed",
+						slog.String("session", id),
+						slog.String("step", st.name),
+						slog.String("error", runErr.Error()))
 				}
 			}
-			unlock()
 		}
 	}
 	if !exists {

@@ -174,3 +174,186 @@ func TestCleanupRefusesEscapes(t *testing.T) {
 		t.Fatal("dir remains")
 	}
 }
+
+// TestNewResolvesSymlinkedRoot proves that passing a symlink as the
+// WORKSPACE_ROOT argument to New still gives Create/Cleanup/RemoveDir a
+// canonical root, so guard()'s exact-equality comparisons (which run against
+// m.root) hold for sessions created through the symlink.
+func TestNewResolvesSymlinkedRoot(t *testing.T) {
+	parent := t.TempDir()
+	real := filepath.Join(parent, "real-root")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(parent, "root-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := New(link, &gitx.FakeRunner{}, &gitx.LockMap{}, logger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Root() != real {
+		t.Fatalf("Root() = %q, want canonical %q", m.Root(), real)
+	}
+
+	// RemoveDir through the canonical manager: a real directory under the
+	// symlinked root is created directly (bypassing Create, since Create
+	// needs a real git mirror) and must still guard and delete correctly.
+	if err := os.MkdirAll(filepath.Join(m.Root(), "01234567", "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RemoveDir("01234567"); err != nil {
+		t.Fatalf("RemoveDir through symlinked root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(real, "01234567")); !os.IsNotExist(err) {
+		t.Fatal("dir remains under real root")
+	}
+
+	// The guard must still refuse an escape reached via the symlinked root:
+	// symlink <root>/<id> out to a directory outside the (real) root.
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(m.Root(), "deadbeef")); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RemoveDir("deadbeef"); !errors.Is(err, ErrOutsideRoot) {
+		t.Fatalf("RemoveDir err = %v, want ErrOutsideRoot", err)
+	}
+
+	// End-to-end Create/Cleanup through the symlinked root, against a real
+	// git mirror, proves the whole lifecycle works with a symlinked
+	// WORKSPACE_ROOT, not just RemoveDir.
+	src := testutil.NewRepo(t)
+	base := src.Head()
+	runner, rerr := gitx.NewExecRunner(logger(), gitx.Options{CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	defer runner.Close()
+	locks := &gitx.LockMap{}
+	cache := mirror.New(t.TempDir(), runner, locks, logger())
+	repo, _ := provider.NewRepositoryBuilder().SetProviderID("fake").SetFullName("a/b").SetDefaultBranch("main").SetCloneURL(src.CloneURL()).Build()
+	mirrorPath, merr := cache.Ensure(context.Background(), fake.New("fake", provider.KindGitLab), repo)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	linkedM, err := New(link, runner, locks, logger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	repoDir, err := linkedM.Create(ctx, mirrorPath, "cafef00d", base)
+	if err != nil {
+		t.Fatalf("Create through symlinked root: %v", err)
+	}
+	if repoDir != filepath.Join(real, "cafef00d", "repo") {
+		t.Fatalf("repoDir = %s, want under canonical root %s", repoDir, real)
+	}
+	if err := linkedM.Cleanup(ctx, mirrorPath, "cafef00d"); err != nil {
+		t.Fatalf("Cleanup through symlinked root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(real, "cafef00d")); !os.IsNotExist(err) {
+		t.Fatal("session dir remains under real root after Cleanup")
+	}
+}
+
+// TestCleanupContinuesPastGenuineGitFailure pins FR-9.1's documented
+// behaviour: a genuine (non-"already gone") failure from any git cleanup
+// step must NOT abort the sequence. All three steps must still be attempted,
+// and the session directory must still be removed, even though the runner
+// fails every single git call. A future change that turns this into an early
+// return breaks idempotent cleanup (FR-9.4) and must fail this test.
+func TestCleanupContinuesPastGenuineGitFailure(t *testing.T) {
+	root := t.TempDir()
+	mirrorPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(mirrorPath, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls []string
+	var mu sync.Mutex
+	failure := errors.New("permission denied")
+	runner := &gitx.FakeRunner{Handler: func(s gitx.Spec) (gitx.Result, error) {
+		mu.Lock()
+		calls = append(calls, strings.Join(s.Args, " "))
+		mu.Unlock()
+		return gitx.Result{}, failure
+	}}
+
+	logBuf := &syncBuffer{}
+	log := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	m, err := New(root, runner, &gitx.LockMap{}, log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Create a real session directory so guard() reports exists=true, which
+	// is the "genuine failure, not a routine repeat" case this test targets.
+	if err := os.MkdirAll(filepath.Join(m.Root(), "01234567", "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err = m.Cleanup(context.Background(), mirrorPath, "01234567")
+	if err != nil {
+		t.Fatalf("Cleanup returned an error despite RemoveAll succeeding: %v", err)
+	}
+
+	mu.Lock()
+	gotCalls := append([]string(nil), calls...)
+	mu.Unlock()
+	wantCalls := []string{
+		"worktree remove --force " + m.RepoDir("01234567"),
+		"worktree prune",
+		"branch -D " + m.BranchName("01234567"),
+	}
+	if len(gotCalls) != len(wantCalls) {
+		t.Fatalf("git steps attempted = %v, want all three steps despite failures: %v", gotCalls, wantCalls)
+	}
+	for i := range wantCalls {
+		if gotCalls[i] != wantCalls[i] {
+			t.Fatalf("step %d = %q, want %q", i, gotCalls[i], wantCalls[i])
+		}
+	}
+
+	if _, err := os.Stat(m.SessionDir("01234567")); !os.IsNotExist(err) {
+		t.Fatal("session dir still present: Cleanup must still remove it despite git-step failures")
+	}
+
+	logOut := logBuf.String()
+	if strings.Count(logOut, "cleanup step failed") != 3 {
+		t.Fatalf("expected all 3 git-step failures logged, got:\n%s", logOut)
+	}
+	if !strings.Contains(logOut, "session=01234567") {
+		t.Fatalf("log missing session id:\n%s", logOut)
+	}
+	if !strings.Contains(logOut, "step=\"worktree remove\"") || !strings.Contains(logOut, "step=\"worktree prune\"") || !strings.Contains(logOut, "step=\"branch delete\"") {
+		t.Fatalf("log missing step identifiers:\n%s", logOut)
+	}
+	if strings.Contains(logOut, "level=DEBUG") {
+		t.Fatalf("a genuine failure (session dir exists) must log at Warn, not Debug:\n%s", logOut)
+	}
+	if !strings.Contains(logOut, "level=WARN") {
+		t.Fatalf("expected Warn-level log for a genuine git-step failure:\n%s", logOut)
+	}
+}
+
+// syncBuffer is a minimal concurrency-safe io.Writer for capturing slog
+// output in tests without importing bytes.Buffer's non-safe methods
+// concurrently.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
