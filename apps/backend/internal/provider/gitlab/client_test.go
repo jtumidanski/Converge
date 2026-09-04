@@ -3,6 +3,7 @@ package gitlab
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -176,5 +177,164 @@ func TestGetChangeCommitsAndAuth(t *testing.T) {
 	spec := gitx.Spec{}
 	if err := c.AuthorizeGit(repo, &spec); err != nil || len(spec.Env) != 3 || spec.Env[1] != "GIT_CONFIG_KEY_0=http.https://gitlab.company.com/.extraheader" {
 		t.Errorf("authorize: %v %v", err, spec.Env)
+	}
+}
+
+// TestGetChangeCommitsTooMany drives a server that always reports another page
+// of commits available and asserts GetChangeCommits stops and returns
+// provider.ErrTooManyCommits rather than paging forever.
+func TestGetChangeCommitsTooMany(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("PRIVATE-TOKEN") != "glpat-test" {
+			w.WriteHeader(500)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/v4/projects/atlas%2Fserver", "/api/v4/projects/atlas/server":
+			_, _ = w.Write(fixture(t, "project.json"))
+		case "/api/v4/projects/atlas/server/merge_requests/421/commits":
+			// Always report another page so an unbounded loop would never terminate.
+			w.Header().Set("X-Next-Page", "2")
+			var buf strings.Builder
+			buf.WriteString("[")
+			for i := 0; i < 100; i++ {
+				if i > 0 {
+					buf.WriteString(",")
+				}
+				_, _ = fmt.Fprintf(&buf, `{"id":"%040x","parent_ids":[],"message":"c","authored_date":"2026-08-20T10:00:00Z"}`, i+1)
+			}
+			buf.WriteString("]")
+			_, _ = w.Write([]byte(buf.String()))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := newClient(srv)
+	repo, err := c.GetRepository(context.Background(), "atlas/server")
+	if err != nil {
+		t.Fatalf("get repository: %v", err)
+	}
+	_, err = c.GetChangeCommits(context.Background(), repo, 421)
+	if !errors.Is(err, provider.ErrTooManyCommits) {
+		t.Fatalf("expected ErrTooManyCommits, got %v", err)
+	}
+}
+
+// mrJSONFixture builds a minimal valid merge_requests list-item JSON object.
+func mrJSONFixture(iid int, mergedAt string) string {
+	return fmt.Sprintf(`{"iid":%d,"title":"t%d","state":"merged","web_url":"https://gitlab.company.com/atlas/server/-/merge_requests/%d",
+		"author":{"username":"smith"},"created_at":"2026-08-20T09:00:00Z","merged_at":"%s",
+		"source_branch":"b%d","target_branch":"main","sha":"%040x",
+		"merge_commit_sha":null,"squash_commit_sha":null,"squash":false}`, iid, iid, iid, mergedAt, iid, iid+1)
+}
+
+// TestListMergedChangesSearchTruncatesToPageSize covers finding 2: the
+// dual-query (author + title) search merge is truncated back to page.Size,
+// and HasNext is set true when truncation drops items.
+func TestListMergedChangesSearchTruncatesToPageSize(t *testing.T) {
+	byAuthor := "[" + strings.Join([]string{
+		mrJSONFixture(1, "2026-08-21T10:00:00Z"),
+		mrJSONFixture(2, "2026-08-22T10:00:00Z"),
+		mrJSONFixture(3, "2026-08-23T10:00:00Z"),
+	}, ",") + "]"
+	byTitle := "[" + strings.Join([]string{
+		mrJSONFixture(3, "2026-08-23T10:00:00Z"),
+		mrJSONFixture(4, "2026-08-24T10:00:00Z"),
+		mrJSONFixture(5, "2026-08-25T10:00:00Z"),
+	}, ",") + "]"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("PRIVATE-TOKEN") != "glpat-test" {
+			w.WriteHeader(500)
+			return
+		}
+		q := r.URL.Query()
+		switch {
+		case r.URL.Path == "/api/v4/projects/atlas%2Fserver" || r.URL.Path == "/api/v4/projects/atlas/server":
+			_, _ = w.Write(fixture(t, "project.json"))
+		case r.URL.Path == "/api/v4/projects/atlas/server/merge_requests" && q.Get("in") == "title":
+			w.Header().Set("X-Next-Page", "")
+			_, _ = w.Write([]byte(byTitle))
+		case r.URL.Path == "/api/v4/projects/atlas/server/merge_requests" && q.Get("author_username") != "":
+			w.Header().Set("X-Next-Page", "")
+			_, _ = w.Write([]byte(byAuthor))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := newClient(srv)
+	repo, err := c.GetRepository(context.Background(), "atlas/server")
+	if err != nil {
+		t.Fatalf("get repository: %v", err)
+	}
+	// 5 unique merged items across the two queries; page.Size caps at 3.
+	s, err := c.ListMergedChanges(context.Background(), repo, "main", "smith", provider.Page{Number: 1, Size: 3})
+	if err != nil {
+		t.Fatalf("list merged changes: %v", err)
+	}
+	if len(s.Items) != 3 {
+		t.Fatalf("expected truncation to page size 3, got %d items: %+v", len(s.Items), s.Items)
+	}
+	if !s.HasNext {
+		t.Error("expected HasNext true after truncation dropped items")
+	}
+	// Highest merged_at first: iid 5, 4, 3.
+	if s.Items[0].Number() != 5 || s.Items[1].Number() != 4 || s.Items[2].Number() != 3 {
+		t.Errorf("unexpected order after truncation: %d %d %d", s.Items[0].Number(), s.Items[1].Number(), s.Items[2].Number())
+	}
+}
+
+// TestTrivialAccessors covers the interface accessor methods that carry no
+// branching logic, and asserts Client.CloneURL never carries credentials.
+func TestTrivialAccessors(t *testing.T) {
+	srv, _ := newServer(t, false)
+	c := newClient(srv)
+	if c.ID() != "gitlab-work" {
+		t.Errorf("ID() = %q", c.ID())
+	}
+	if c.Kind() != provider.KindGitLab {
+		t.Errorf("Kind() = %v", c.Kind())
+	}
+	if c.DisplayName() != "GitLab Work" {
+		t.Errorf("DisplayName() = %q", c.DisplayName())
+	}
+	if c.BaseURL() != srv.URL {
+		t.Errorf("BaseURL() = %q, want %q", c.BaseURL(), srv.URL)
+	}
+	repo, err := c.GetRepository(context.Background(), "atlas/server")
+	if err != nil {
+		t.Fatalf("get repository: %v", err)
+	}
+	clone := c.CloneURL(repo)
+	if clone != "https://gitlab.company.com/atlas/server.git" {
+		t.Errorf("CloneURL() = %q", clone)
+	}
+	if strings.Contains(clone, "glpat-test") || strings.Contains(clone, "@") || strings.Contains(clone, "token") {
+		t.Errorf("CloneURL() must never carry credentials: %q", clone)
+	}
+}
+
+// TestMRJSONState covers all three branches of mrJSON.state(), none of which
+// are exercised by the merged-state-only fixtures used elsewhere.
+func TestMRJSONState(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want provider.ChangeState
+	}{
+		{"merged", provider.StateMerged},
+		{"opened", provider.StateOpen},
+		{"locked", provider.StateOpen},
+		{"closed", provider.StateClosed},
+		{"unknown-value", provider.StateClosed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.raw, func(t *testing.T) {
+			m := mrJSON{State: tc.raw}
+			if got := m.state(); got != tc.want {
+				t.Errorf("state(%q) = %v, want %v", tc.raw, got, tc.want)
+			}
+		})
 	}
 }

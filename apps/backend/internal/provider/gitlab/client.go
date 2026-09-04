@@ -16,7 +16,11 @@ import (
 	"github.com/jtumidanski/converge/internal/provider"
 )
 
-const providerPage = 100
+const (
+	providerPage = 100
+	// MaxMRCommits bounds how many commits GetChangeCommits will collect.
+	MaxMRCommits = 250
+)
 
 var usernameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
@@ -161,6 +165,15 @@ func (c *Client) ListMergedChanges(ctx context.Context, repo provider.Repository
 	hasNext = hasNext || next != ""
 	items = mergeUnique(items, byTitle)
 	sortMergedDesc(items)
+	// The author and title queries are each independently paginated against
+	// GitLab, so their merged/re-sorted union can exceed page.Size. Truncate
+	// back to the requested page size; this makes the merged page boundary
+	// approximate rather than exact, which is accepted for this search
+	// convenience path (see task-6 fix review, finding 2).
+	if len(items) > page.Size {
+		items = items[:page.Size]
+		hasNext = true
+	}
 	return provider.Slice[provider.ChangeRequest]{Items: items, HasNext: hasNext}, nil
 }
 
@@ -204,6 +217,9 @@ func (c *Client) GetChangeCommits(ctx context.Context, repo provider.Repository,
 			return nil, err
 		}
 		all = append(all, raw...)
+		if len(all) > MaxMRCommits {
+			return nil, fmt.Errorf("merge request %d: %w", number, provider.ErrTooManyCommits)
+		}
 		if next == "" || len(raw) == 0 {
 			break
 		}
