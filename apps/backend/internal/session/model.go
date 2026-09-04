@@ -135,27 +135,66 @@ func (s Session) IsExpired(now time.Time) bool { return !now.Before(s.expiresAt)
 // IsActive is true unless the session is FINISHED or EXPIRED.
 func (s Session) IsActive() bool { return s.status != StatusFinished && s.status != StatusExpired }
 
-// EarliestChange returns the first resolved change (sorted by merge time).
+// EarliestChange returns the resolved change with the earliest MergedAt
+// timestamp. Ties (two changes landed with the same merge timestamp) are
+// broken by ascending change Number, so the result is deterministic
+// regardless of the order changes were resolved or supplied to
+// WithResolved.
 func (s Session) EarliestChange() (ResolvedChange, bool) {
 	if len(s.resolved) == 0 {
 		return ResolvedChange{}, false
 	}
-	return s.resolved[0], true
+	earliest := s.resolved[0]
+	for _, rc := range s.resolved[1:] {
+		if rc.mergedAt.Before(earliest.mergedAt) ||
+			(rc.mergedAt.Equal(earliest.mergedAt) && rc.number < earliest.number) {
+			earliest = rc
+		}
+	}
+	return earliest, true
+}
+
+// isTerminal reports whether the session is in a state (FINISHED or
+// EXPIRED) from which no further transition is meaningful: its workspace
+// has already been cleaned up, so any transition that would make it appear
+// active again (directly or indirectly) must be rejected rather than
+// applied.
+func (s Session) isTerminal() bool {
+	return s.status == StatusFinished || s.status == StatusExpired
 }
 
 func (s Session) touch(now time.Time) Session { s.updatedAt = now; return s }
 
+// WithStage sets the current processing stage. A terminal session (FINISHED
+// or EXPIRED) is left unchanged: this is a no-op that returns the receiver
+// as-is rather than an error, since callers driving a background pipeline
+// should not need to fork their error handling for a session that raced a
+// sweep or Finish.
 func (s Session) WithStage(stage string, now time.Time) Session {
+	if s.isTerminal() {
+		return s
+	}
 	s.stage = stage
 	return s.touch(now)
 }
 
+// WithResolved records the resolved changes. A terminal session is left
+// unchanged; see WithStage.
 func (s Session) WithResolved(rcs []ResolvedChange, now time.Time) Session {
+	if s.isTerminal() {
+		return s
+	}
 	s.resolved = append([]ResolvedChange(nil), rcs...)
 	return s.touch(now)
 }
 
+// WithBase records the base SHA. Unlike the no-error transitions, this
+// (along with Ready) already returns an error for structural reasons, so a
+// terminal receiver is reported as an error rather than silently ignored.
 func (s Session) WithBase(sha string, now time.Time) (Session, error) {
+	if s.isTerminal() {
+		return Session{}, fmt.Errorf("session: cannot set base on a terminal session (status %s)", s.status)
+	}
 	if err := gitx.ValidateSHA(sha); err != nil {
 		return Session{}, err
 	}
@@ -163,8 +202,14 @@ func (s Session) WithBase(sha string, now time.Time) (Session, error) {
 	return s.touch(now), nil
 }
 
-// Ready marks the session READY; requires a base SHA.
+// Ready marks the session READY; requires a base SHA. A terminal receiver
+// (FINISHED or EXPIRED) is rejected with an error rather than silently
+// resurrected: its workspace has already been cleaned up, so marking it
+// READY again would point a viewer at files that no longer exist.
 func (s Session) Ready(headSHA string, files []diff.FileSummary, totals diff.Totals, now time.Time) (Session, error) {
+	if s.isTerminal() {
+		return Session{}, fmt.Errorf("session: cannot become ready from a terminal session (status %s)", s.status)
+	}
 	if s.baseSHA == "" {
 		return Session{}, errors.New("session: cannot be ready without a base sha")
 	}
@@ -180,27 +225,49 @@ func (s Session) Ready(headSHA string, files []diff.FileSummary, totals diff.Tot
 	return s.touch(now), nil
 }
 
+// Conflicted marks the session CONFLICTED. A terminal session is left
+// unchanged; see WithStage.
 func (s Session) Conflicted(err *ReviewError, now time.Time) Session {
+	if s.isTerminal() {
+		return s
+	}
 	s.status = StatusConflicted
 	s.stage = ""
 	s.err = err.clone()
 	return s.touch(now)
 }
 
+// Failed marks the session FAILED. A terminal session is left unchanged;
+// see WithStage.
 func (s Session) Failed(err *ReviewError, now time.Time) Session {
+	if s.isTerminal() {
+		return s
+	}
 	s.status = StatusFailed
 	s.stage = ""
 	s.err = err.clone()
 	return s.touch(now)
 }
 
+// Finished marks the session FINISHED. Calling Finished on an already
+// terminal session (FINISHED or EXPIRED) is a no-op that returns the
+// receiver unchanged: an EXPIRED session must not be able to "un-expire"
+// itself back to FINISHED.
 func (s Session) Finished(now time.Time) Session {
+	if s.isTerminal() {
+		return s
+	}
 	s.status = StatusFinished
 	s.stage = ""
 	return s.touch(now)
 }
 
+// Expired marks the session EXPIRED. Calling Expired on an already terminal
+// session is a no-op that returns the receiver unchanged; see Finished.
 func (s Session) Expired(now time.Time) Session {
+	if s.isTerminal() {
+		return s
+	}
 	s.status = StatusExpired
 	s.stage = ""
 	return s.touch(now)

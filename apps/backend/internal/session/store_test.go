@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -164,6 +165,194 @@ func TestSweepExpires(t *testing.T) {
 	st.Sweep(context.Background())
 	if len(fc.cleaned) != 1 {
 		t.Fatal("expired session cleaned twice")
+	}
+}
+
+// TestStoreConcurrentAccess genuinely contends on the Store: multiple
+// goroutines hammer Save/Get/List for distinct sessions while a separate
+// goroutine repeatedly Sweeps, all racing on the same *Store under -race.
+// A clean -race run here actually means something, unlike the sequential
+// tests above (see finding 4: Task 5 shipped a real data race that a
+// sequential-only -race run did not catch).
+func TestStoreConcurrentAccess(t *testing.T) {
+	now := t0
+	var nowMu sync.Mutex
+	st, _ := newStore(t, &now)
+	// newStore captures `now` by pointer via a closure reading *now without a
+	// lock; give Sweep's reads of "now" the same protection the writer below
+	// uses so -race has nothing legitimate to report on the test's own state.
+	st.now = func() time.Time {
+		nowMu.Lock()
+		defer nowMu.Unlock()
+		return now
+	}
+
+	const workers = 8
+	const perWorker = 25
+	var wg sync.WaitGroup
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				id := fmt.Sprintf("%08x", worker*perWorker+i)
+				s, err := NewBuilder().SetID(id).SetProviderID("gh").SetRepository("a/b").SetBaseBranch("main").
+					SetRequestedChanges([]int{1}).SetCreatedAt(t0).SetTTL(time.Hour).Build()
+				if err != nil {
+					t.Errorf("build %s: %v", id, err)
+					return
+				}
+				if err := st.Save(s); err != nil {
+					t.Errorf("save %s: %v", id, err)
+					return
+				}
+				if _, ok := st.Get(id); !ok {
+					t.Errorf("get %s: not found immediately after save", id)
+				}
+				_ = st.List()
+				_ = st.Corrupted(id)
+			}
+		}(w)
+	}
+
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		for i := 0; i < 100; i++ {
+			st.Sweep(context.Background())
+		}
+	}()
+
+	wg.Wait()
+	nowMu.Lock()
+	now = now.Add(2 * time.Hour) // past every session's 1h TTL
+	nowMu.Unlock()
+	st.Sweep(context.Background()) // final sweep, expires everything
+	<-sweepDone
+
+	if len(st.List()) != 0 {
+		t.Fatalf("expected every session expired after the final sweep, got %d active", len(st.List()))
+	}
+}
+
+// TestRunSweeperSweepsOnIntervalAndStopsOnCancel drives RunSweeper
+// deterministically: a short interval plus a channel-backed Cleaner lets the
+// test wait for the actual sweep to happen instead of guessing a sleep
+// duration, and a cancelled context proves the loop actually exits.
+func TestRunSweeperSweepsOnIntervalAndStopsOnCancel(t *testing.T) {
+	now := t0.Add(2 * time.Hour) // already past the session's TTL below
+	swept := make(chan string, 1)
+	cleaner := &signalingCleaner{cleaned: swept}
+	st := NewStore(t.TempDir(), time.Hour, cleaner, slog.New(slog.NewTextHandler(os.Stderr, nil)), func() time.Time { return now })
+
+	s, err := NewBuilder().SetID("0123abcd").SetProviderID("gh").SetRepository("a/b").SetBaseBranch("main").
+		SetRequestedChanges([]int{1}).SetCreatedAt(t0).SetTTL(time.Hour).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(s); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		st.RunSweeper(ctx, 5*time.Millisecond)
+	}()
+
+	select {
+	case id := <-swept:
+		if id != "0123abcd" {
+			t.Fatalf("swept unexpected id %q", id)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunSweeper did not sweep the expired session in time")
+	}
+
+	if got, ok := st.Get("0123abcd"); !ok || got.Status() != StatusExpired {
+		t.Fatalf("session not expired after sweep: %+v ok=%v", got, ok)
+	}
+
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunSweeper did not stop after context cancellation")
+	}
+}
+
+// signalingCleaner reports each Cleanup call on a channel so tests can wait
+// deterministically for a sweep to actually happen, instead of sleeping.
+type signalingCleaner struct {
+	cleaned chan string
+}
+
+func (c *signalingCleaner) Cleanup(_ context.Context, s Session) error {
+	select {
+	case c.cleaned <- s.ID():
+	default:
+	}
+	return nil
+}
+
+func (c *signalingCleaner) RemoveDir(_ context.Context, _ string) error { return nil }
+
+// TestGetVsCorrupted proves finding 5's fix: after LoadAll encounters a
+// corrupt session.json for an id that is younger than the store's TTL (so
+// it is deliberately left on disk rather than removed), Get(id) reports
+// false exactly as it would for an id that never existed - but
+// Corrupted(id) distinguishes the two. Once that id is healthily rewritten
+// via Save, Corrupted(id) reverts to false.
+func TestGetVsCorrupted(t *testing.T) {
+	now := t0
+	st, _ := newStore(t, &now)
+
+	corruptID := "eeeeeeee"
+	dir := filepath.Join(st.Root(), corruptID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.json"), []byte("{not valid json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.LoadAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := st.Get(corruptID); ok {
+		t.Fatal("corrupt id should not be in the live index")
+	}
+	if !st.Corrupted(corruptID) {
+		t.Fatal("Corrupted should report true for a known-corrupt id")
+	}
+	if st.Corrupted("ffffffff") {
+		t.Fatal("Corrupted should report false for an id that was never seen at all")
+	}
+
+	// A never-existed id and a corrupt id both fail Get identically...
+	_, neverOK := st.Get("ffffffff")
+	_, corruptOK := st.Get(corruptID)
+	if neverOK != corruptOK {
+		t.Fatal("Get should not distinguish the two by itself (that's what Corrupted is for)")
+	}
+
+	// ...but once the id is healthily rewritten, it's no longer corrupt.
+	healed, err := NewBuilder().SetID(corruptID).SetProviderID("gh").SetRepository("a/b").SetBaseBranch("main").
+		SetRequestedChanges([]int{1}).SetCreatedAt(t0).SetTTL(time.Hour).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(healed); err != nil {
+		t.Fatal(err)
+	}
+	if st.Corrupted(corruptID) {
+		t.Fatal("Corrupted should clear once the id is saved successfully")
+	}
+	if _, ok := st.Get(corruptID); !ok {
+		t.Fatal("healed id should now be found")
 	}
 }
 

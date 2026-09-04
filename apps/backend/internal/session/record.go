@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/jtumidanski/converge/internal/diff"
+	"github.com/jtumidanski/converge/internal/gitx"
 )
 
 // SchemaVersion of session.json.
@@ -116,8 +117,25 @@ func FromRecord(r Record) (Session, error) {
 		}
 		s.resolved = append(s.resolved, rc)
 	}
-	s.baseSHA = deref(r.BaseSHA)
-	s.headSHA = deref(r.HeadSHA)
+	// BaseSHA/HeadSHA are validated here rather than trusted as opaque
+	// strings: session.json is data that survives a restart, so a hand-edited
+	// or version-skewed record with a malformed SHA must be rejected by
+	// FromRecord rather than silently accepted and only fail (or worse, not
+	// fail) somewhere downstream.
+	baseSHA := deref(r.BaseSHA)
+	if baseSHA != "" {
+		if err := gitx.ValidateSHA(baseSHA); err != nil {
+			return Session{}, fmt.Errorf("session %s: base sha: %w", r.ID, err)
+		}
+	}
+	headSHA := deref(r.HeadSHA)
+	if headSHA != "" {
+		if err := gitx.ValidateSHA(headSHA); err != nil {
+			return Session{}, fmt.Errorf("session %s: head sha: %w", r.ID, err)
+		}
+	}
+	s.baseSHA = baseSHA
+	s.headSHA = headSHA
 	s.status = r.Status
 	s.stage = deref(r.Stage)
 	s.err = r.Error.clone()

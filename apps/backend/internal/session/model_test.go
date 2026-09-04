@@ -109,6 +109,160 @@ func TestTransitionsAreImmutable(t *testing.T) {
 	}
 }
 
+// terminalSessions returns a FINISHED and an EXPIRED session derived from a
+// fresh READY session, for use by TestTerminalTransitionsAreNoOps.
+func terminalSessions(t *testing.T) (finished, expired Session) {
+	t.Helper()
+	s := newSession(t)
+	s, err := s.WithBase(strings.Repeat("b", 40), t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err = s.Ready(strings.Repeat("c", 40), nil, diff.Totals{}, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished = s.Finished(t0.Add(time.Minute))
+	expired = s.Expired(t0.Add(time.Minute))
+	return finished, expired
+}
+
+// TestTerminalTransitionsAreNoOps proves finding 1's fix: none of the eight
+// transitions can resurrect a FINISHED or EXPIRED session. The six
+// no-error transitions must return the receiver completely unchanged; the
+// two error-returning transitions (WithBase, Ready) must return an error.
+func TestTerminalTransitionsAreNoOps(t *testing.T) {
+	t2 := t0.Add(time.Hour)
+	re := &ReviewError{Code: CodeConflict, Message: "boom"}
+
+	check := func(name string, terminal Session) {
+		wantStatus := terminal.Status()
+		wantUpdatedAt := terminal.UpdatedAt()
+
+		if got := terminal.WithStage("resolving", t2); got.Status() != wantStatus || !got.UpdatedAt().Equal(wantUpdatedAt) || got.Stage() != terminal.Stage() {
+			t.Errorf("%s: WithStage mutated a terminal session: %+v", name, got)
+		}
+		rc, err := NewResolvedChange(ResolvedChangeParams{Number: 1, Title: "t", Strategy: StrategyMerge, LandingSHAs: []string{strings.Repeat("a", 40)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := terminal.WithResolved([]ResolvedChange{rc}, t2); got.Status() != wantStatus || !got.UpdatedAt().Equal(wantUpdatedAt) || len(got.ResolvedChanges()) != len(terminal.ResolvedChanges()) {
+			t.Errorf("%s: WithResolved mutated a terminal session: %+v", name, got)
+		}
+		if _, err := terminal.WithBase(strings.Repeat("d", 40), t2); err == nil {
+			t.Errorf("%s: WithBase on a terminal session did not error", name)
+		}
+		if _, err := terminal.Ready(strings.Repeat("e", 40), nil, diff.Totals{}, t2); err == nil {
+			t.Errorf("%s: Ready on a terminal session did not error", name)
+		}
+		if got := terminal.Conflicted(re, t2); got.Status() != wantStatus || !got.UpdatedAt().Equal(wantUpdatedAt) {
+			t.Errorf("%s: Conflicted mutated a terminal session: %+v", name, got)
+		}
+		if got := terminal.Failed(re, t2); got.Status() != wantStatus || !got.UpdatedAt().Equal(wantUpdatedAt) {
+			t.Errorf("%s: Failed mutated a terminal session: %+v", name, got)
+		}
+		if got := terminal.Finished(t2); got.Status() != wantStatus || !got.UpdatedAt().Equal(wantUpdatedAt) {
+			t.Errorf("%s: Finished mutated a terminal session: %+v", name, got)
+		}
+		if got := terminal.Expired(t2); got.Status() != wantStatus || !got.UpdatedAt().Equal(wantUpdatedAt) {
+			t.Errorf("%s: Expired mutated a terminal session: %+v", name, got)
+		}
+	}
+
+	finished, expired := terminalSessions(t)
+	if finished.Status() != StatusFinished {
+		t.Fatalf("setup: finished status = %s", finished.Status())
+	}
+	if expired.Status() != StatusExpired {
+		t.Fatalf("setup: expired status = %s", expired.Status())
+	}
+	check("FINISHED", finished)
+	check("EXPIRED", expired)
+}
+
+// TestNonTerminalTransitionsStillWork is a control for
+// TestTerminalTransitionsAreNoOps: it proves the terminal-state guard did
+// not also block ordinary transitions between non-terminal states.
+func TestNonTerminalTransitionsStillWork(t *testing.T) {
+	s := newSession(t)
+	t1 := t0.Add(time.Minute)
+
+	s2 := s.WithStage("resolving", t1)
+	if s2.Stage() != "resolving" || !s2.UpdatedAt().Equal(t1) {
+		t.Fatalf("WithStage: %+v", s2)
+	}
+	rc, err := NewResolvedChange(ResolvedChangeParams{Number: 1, Title: "t", Strategy: StrategyMerge, LandingSHAs: []string{strings.Repeat("a", 40)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s3 := s2.WithResolved([]ResolvedChange{rc}, t1)
+	if len(s3.ResolvedChanges()) != 1 {
+		t.Fatalf("WithResolved: %+v", s3)
+	}
+	s4, err := s3.WithBase(strings.Repeat("b", 40), t1)
+	if err != nil || s4.BaseSHA() != strings.Repeat("b", 40) {
+		t.Fatalf("WithBase: %v %+v", err, s4)
+	}
+	s5, err := s4.Ready(strings.Repeat("c", 40), nil, diff.Totals{}, t1)
+	if err != nil || s5.Status() != StatusReady {
+		t.Fatalf("Ready: %v %+v", err, s5)
+	}
+	re := &ReviewError{Code: CodeConflict, Message: "boom"}
+	if got := s4.Conflicted(re, t1); got.Status() != StatusConflicted {
+		t.Fatalf("Conflicted: %+v", got)
+	}
+	if got := s4.Failed(re, t1); got.Status() != StatusFailed {
+		t.Fatalf("Failed: %+v", got)
+	}
+	if got := s5.Finished(t1); got.Status() != StatusFinished {
+		t.Fatalf("Finished: %+v", got)
+	}
+	if got := s5.Expired(t1); got.Status() != StatusExpired {
+		t.Fatalf("Expired: %+v", got)
+	}
+}
+
+// TestEarliestChangeSortsByMergeTime proves finding 2's fix: EarliestChange
+// picks the change with the smallest MergedAt regardless of slice order,
+// breaking ties by ascending change Number for determinism.
+func TestEarliestChangeSortsByMergeTime(t *testing.T) {
+	mk := func(number int, mergedAt time.Time) ResolvedChange {
+		rc, err := NewResolvedChange(ResolvedChangeParams{
+			Number: number, Title: "t", Strategy: StrategyMerge,
+			MergedAt: mergedAt, LandingSHAs: []string{strings.Repeat("a", 40)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rc
+	}
+
+	// Out-of-order input: the slice order does not match merge-time order.
+	s := newSession(t)
+	s = s.WithResolved([]ResolvedChange{
+		mk(300, t0.Add(3*time.Hour)),
+		mk(100, t0.Add(1*time.Hour)),
+		mk(200, t0.Add(2*time.Hour)),
+	}, t0)
+	got, ok := s.EarliestChange()
+	if !ok || got.Number() != 100 {
+		t.Fatalf("out-of-order: got %+v", got)
+	}
+
+	// Tie on MergedAt: broken by ascending Number.
+	tie := t0.Add(5 * time.Hour)
+	s2 := newSession(t)
+	s2 = s2.WithResolved([]ResolvedChange{
+		mk(50, tie),
+		mk(10, tie),
+		mk(30, tie),
+	}, t0)
+	got2, ok := s2.EarliestChange()
+	if !ok || got2.Number() != 10 {
+		t.Fatalf("tie: got %+v", got2)
+	}
+}
+
 func TestNewID(t *testing.T) {
 	seen := map[string]bool{}
 	for i := 0; i < 100; i++ {

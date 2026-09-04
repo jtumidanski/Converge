@@ -31,6 +31,7 @@ type Store struct {
 	now     func() time.Time
 	mu      sync.RWMutex
 	index   map[string]Session
+	corrupt map[string]error
 }
 
 // NewStore creates a store; root must already exist.
@@ -38,7 +39,7 @@ func NewStore(root string, ttl time.Duration, cleaner Cleaner, log *slog.Logger,
 	if now == nil {
 		now = time.Now
 	}
-	return &Store{root: root, ttl: ttl, cleaner: cleaner, log: log, now: now, index: map[string]Session{}}
+	return &Store{root: root, ttl: ttl, cleaner: cleaner, log: log, now: now, index: map[string]Session{}, corrupt: map[string]error{}}
 }
 
 func (s *Store) Root() string         { return s.root }
@@ -76,19 +77,37 @@ func (s *Store) Save(sess Session) error {
 	}
 	s.mu.Lock()
 	s.index[sess.ID()] = sess
+	delete(s.corrupt, sess.ID()) // a successful write means this id is no longer corrupt
 	s.mu.Unlock()
 	return nil
 }
 
-// Get returns the indexed session. It reports only whether the session is
-// currently known in memory; it does not distinguish "never existed" from
-// "existed but was removed" — callers needing that distinction should
-// consult ErrNotFound semantics at a higher layer.
+// Get returns the indexed session. Its bool return only ever means "this id
+// is currently in the live index" — it deliberately cannot distinguish "id
+// never existed" from "id existed but LoadAll found its session.json
+// unreadable or invalid". That distinction is not lost, though: LoadAll
+// records every such id (see Corrupted), so a caller building a 404 vs. 500
+// response can check Corrupted(id) after a failed Get without any change to
+// this signature.
 func (s *Store) Get(id string) (Session, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	sess, ok := s.index[id]
 	return sess, ok
+}
+
+// Corrupted reports whether id was found, at the most recent LoadAll, to
+// have an unreadable or invalid session.json — i.e. whether a subsequent
+// Get(id) returning false means "was corrupt" rather than "never existed".
+// It is cleared for an id the moment that id is next written successfully
+// via Save (including LoadAll's own rewrite of a recovered CREATING
+// session), so it never reports a stale corruption once the id is healthy
+// again.
+func (s *Store) Corrupted(id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.corrupt[id]
+	return ok
 }
 
 // List returns active sessions, newest first.
@@ -141,11 +160,14 @@ func (s *Store) expire(ctx context.Context, sess Session) {
 //     being indexed, so a second restart doesn't need to redo this.
 //   - unreadable or corrupt (missing file, invalid JSON, failed validation):
 //     this must never be silently dropped or treated as "absent". It is
-//     logged as a warning. If the directory is older than the store's TTL,
-//     it is very unlikely to ever recover (nothing will ever finish writing
-//     to it) so the cleaner removes it. If it is younger than the TTL, it is
-//     left alone in case a concurrent writer is mid-Save; a future restart
-//     will reconsider it.
+//     logged as a warning, and the id is recorded in s.corrupt so that
+//     Get(id) returning false can be distinguished from "id never existed"
+//     via Corrupted(id) for the remainder of the process's life (or until a
+//     later Save for that id succeeds). If the directory is older than the
+//     store's TTL, it is very unlikely to ever recover (nothing will ever
+//     finish writing to it) so the cleaner removes it. If it is younger
+//     than the TTL, it is left alone in case a concurrent writer is
+//     mid-Save; a future restart will reconsider it.
 //   - not a session directory at all (fails ValidateSessionID, e.g. a stray
 //     file or a directory this store doesn't own): skipped entirely, never
 //     touched.
@@ -179,6 +201,9 @@ func (s *Store) LoadAll(ctx context.Context) error {
 				continue // not ours
 			}
 			s.log.Warn("unreadable or corrupt session record", slog.String("session", id), slog.String("error", readErr.Error()))
+			s.mu.Lock()
+			s.corrupt[id] = readErr
+			s.mu.Unlock()
 			info, statErr := e.Info()
 			if statErr == nil && now.Sub(info.ModTime()) > s.ttl {
 				s.log.Warn("removing invalid session directory", slog.String("session", id))
