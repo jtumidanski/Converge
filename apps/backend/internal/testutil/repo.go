@@ -4,6 +4,7 @@ package testutil
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -140,14 +141,48 @@ func (r *Repo) Head() string { r.T.Helper(); return r.RevParse("HEAD") }
 // CloneURL returns a file:// URL for the bare repository.
 func (r *Repo) CloneURL() string { return "file://" + r.Bare }
 
-// FileContent returns rev:path or "" when absent.
+// FileContent returns the content of path at rev, or "" if path does not
+// exist at that revision. Any other git failure (an invalid revision, a
+// harness bug, git itself failing) fails the test via r.T.Fatal, consistent
+// with every other method in this package — "" means "path absent," never
+// "something went wrong."
 func (r *Repo) FileContent(rev, path string) string {
-	cmd := exec.Command("git", "show", rev+":"+path) //nolint:gosec // testutil intentionally shells out to the real git binary with fixed args
-	cmd.Dir = r.Work
-	cmd.Env = r.env()
-	out, err := cmd.Output()
+	r.T.Helper()
+	sha := r.RevParse(rev) // fails loud (Fatal) on an invalid revision
+
+	object := sha + ":" + path
+	existCmd := exec.Command("git", "cat-file", "-e", object) //nolint:gosec // testutil intentionally shells out to the real git binary with fixed args
+	existCmd.Dir = r.Work
+	existCmd.Env = r.env()
+	var stderr bytes.Buffer
+	existCmd.Stderr = &stderr
+	if err := existCmd.Run(); err != nil {
+		if gitObjectMissing(err) {
+			return ""
+		}
+		r.T.Fatalf("git cat-file -e %s: %v\n%s", object, err, stderr.String())
+	}
+
+	showCmd := exec.Command("git", "show", object) //nolint:gosec // testutil intentionally shells out to the real git binary with fixed args
+	showCmd.Dir = r.Work
+	showCmd.Env = r.env()
+	out, err := showCmd.Output()
 	if err != nil {
-		return ""
+		r.T.Fatalf("git show %s: %v", object, err)
 	}
 	return string(out)
+}
+
+// gitObjectMissing reports whether err is a plain nonzero exit from a git
+// existence check (e.g. `git cat-file -e`) — how git signals "this object
+// doesn't exist" for an otherwise well-formed <rev>:<path> expression. Any
+// other error (git failing to start, a signal, etc.) is not a "missing
+// object" condition and should be treated as a harness failure instead.
+//
+// Extracted as a pure function, rather than inlined with r.T.Fatal, so the
+// classification logic itself is unit-testable without needing to exercise
+// testing.T's Fatal (which kills the calling goroutine).
+func gitObjectMissing(err error) bool {
+	var exitErr *exec.ExitError
+	return err != nil && errors.As(err, &exitErr)
 }
