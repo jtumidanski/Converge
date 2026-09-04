@@ -88,3 +88,13 @@ func MsgGitFailure() string {
 func MsgInterrupted() string {
 	return "The review was interrupted by a server restart before it finished building."
 }
+
+// MsgBuildTimedOut reports a build stopped by the build ceiling. It shares the
+// INTERRUPTED code with MsgInterrupted — the code set is fixed — but must not
+// share its wording: a build that ran past the ceiling was not interrupted by
+// a restart.
+func MsgBuildTimedOut() string {
+	return fmt.Sprintf(
+		"The review took longer than the %d-minute build limit and was stopped before it finished building.",
+		int(buildCeiling.Minutes()))
+}

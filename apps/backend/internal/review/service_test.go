@@ -3,6 +3,8 @@ package review
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,12 +54,69 @@ func (a *hookApplicator) Apply(ctx context.Context, repoDir, providerID string, 
 	return a.delegate.Apply(ctx, repoDir, providerID, rc)
 }
 
+// logWatch lets a test wait for a specific log message instead of sleeping.
+// Some branches (a queued build draining on shutdown) produce no observable
+// state change at all — the session deliberately stays CREATING — so the log
+// record is the only deterministic signal that the branch ran.
+type logWatch struct {
+	mu      sync.Mutex
+	waiters map[string]chan struct{}
+}
+
+func newLogWatch() *logWatch { return &logWatch{waiters: map[string]chan struct{}{}} }
+
+// wait registers interest in msg before the code under test runs. The
+// returned channel is closed the first time that message is logged.
+func (w *logWatch) wait(msg string) <-chan struct{} {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	ch := make(chan struct{})
+	w.waiters[msg] = ch
+	return ch
+}
+
+func (w *logWatch) note(msg string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if ch, ok := w.waiters[msg]; ok {
+		close(ch)
+		delete(w.waiters, msg)
+	}
+}
+
+// watchHandler reports every record to a logWatch and forwards it to inner
+// only if inner wants it. Enabled is always true so an Info record still
+// reaches the watch even though the test handler only prints warnings.
+type watchHandler struct {
+	inner slog.Handler
+	watch *logWatch
+}
+
+func (h *watchHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *watchHandler) Handle(ctx context.Context, r slog.Record) error {
+	h.watch.note(r.Message)
+	if h.inner.Enabled(ctx, r.Level) {
+		return h.inner.Handle(ctx, r)
+	}
+	return nil
+}
+
+func (h *watchHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &watchHandler{inner: h.inner.WithAttrs(attrs), watch: h.watch}
+}
+
+func (h *watchHandler) WithGroup(name string) slog.Handler {
+	return &watchHandler{inner: h.inner.WithGroup(name), watch: h.watch}
+}
+
 type serviceFixture struct {
-	svc  *Service
-	prov *fake.Provider
-	src  *testutil.Repo
-	ws   *workspace.Manager
-	app  *hookApplicator
+	svc   *Service
+	prov  *fake.Provider
+	src   *testutil.Repo
+	ws    *workspace.Manager
+	app   *hookApplicator
+	watch *logWatch
 
 	mu      sync.Mutex
 	nowHook func()
@@ -130,11 +189,12 @@ func newServiceFixtureWith(t *testing.T, maxConcurrentBuilds int) *serviceFixtur
 	cleaner := NewCleaner(mirrors, ws, testLog())
 	// The store keeps time.Now so a fixture now-hook cannot recurse into it.
 	store := session.NewStore(ws.Root(), 24*time.Hour, cleaner, testLog(), time.Now)
-	f := &serviceFixture{prov: p, src: src, ws: ws,
+	f := &serviceFixture{prov: p, src: src, ws: ws, watch: newLogWatch(),
 		app: &hookApplicator{delegate: NewCherryPickApplicator(runner, testLog())}}
 	f.svc = NewService(Deps{
 		Providers: registry, Mirrors: mirrors, Workspaces: ws, Store: store,
-		Applicator: f.app, Runner: runner, Log: testLog(),
+		Applicator: f.app, Runner: runner,
+		Log:        slog.New(&watchHandler{inner: testLog().Handler(), watch: f.watch}),
 		SessionTTL: 24 * time.Hour, MaxConcurrentBuilds: maxConcurrentBuilds, Now: f.now,
 	})
 	return f
@@ -315,15 +375,30 @@ func TestServiceStartBuildRespectsMaxConcurrentBuilds(t *testing.T) {
 
 	var mu sync.Mutex
 	inflight, peak := 0, 0
+	// The overlap is a barrier, not a sleep: every build blocks inside Apply
+	// until `limit` builds are simultaneously in flight, so the lower bound is
+	// reached by construction on any machine rather than by winning a race
+	// against a 250ms hold. It cannot deadlock — the semaphore admits `limit`
+	// builds and there are more sessions than that, so the limit-th arrival
+	// always happens — but a watchdog releases the barrier anyway so a
+	// regression fails as an assertion instead of hanging.
+	barrier := make(chan struct{})
+	var release sync.Once
+	open := func() { release.Do(func() { close(barrier) }) }
+	watchdog := time.AfterFunc(60*time.Second, open)
+	defer watchdog.Stop()
 	f.app.set(func(context.Context, session.ResolvedChange) {
 		mu.Lock()
 		inflight++
 		if inflight > peak {
 			peak = inflight
 		}
+		reached := inflight >= limit
 		mu.Unlock()
-		// Hold the slot long enough for a second build to overlap.
-		time.Sleep(250 * time.Millisecond)
+		if reached {
+			open()
+		}
+		<-barrier
 		mu.Lock()
 		inflight--
 		mu.Unlock()
@@ -347,8 +422,8 @@ func TestServiceStartBuildRespectsMaxConcurrentBuilds(t *testing.T) {
 	if got > limit {
 		t.Errorf("peak concurrent builds = %d, want <= MaxConcurrentBuilds (%d)", got, limit)
 	}
-	if got < 2 {
-		t.Errorf("peak concurrent builds = %d: the builds never overlapped, so the bound was not exercised", got)
+	if got < limit {
+		t.Errorf("peak concurrent builds = %d: the barrier never saw %d builds overlap, so the bound was not exercised", got, limit)
 	}
 }
 
@@ -565,6 +640,121 @@ func TestServiceBuildOnANonCreatingSessionDoesNotRerun(t *testing.T) {
 	}
 	if !again.UpdatedAt().Equal(done.UpdatedAt()) {
 		t.Errorf("second build re-ran the pipeline: updatedAt %s -> %s", done.UpdatedAt(), again.UpdatedAt())
+	}
+}
+
+// TestServiceStartBuildDrainsAQueuedBuildOnShutdown covers StartBuild's
+// ctx.Done() branch: with every slot taken and the lifetime context already
+// cancelled, the queued build must give up instead of acquiring a slot and
+// running a pipeline whose context is dead. The session is deliberately left
+// CREATING (LoadAll marks it INTERRUPTED on the next start), so the log record
+// is the deterministic signal that the branch ran — no sleeping.
+func TestServiceStartBuildDrainsAQueuedBuildOnShutdown(t *testing.T) {
+	f := newServiceFixtureWith(t, 1)
+	gate := make(chan struct{})
+	var gateOnce sync.Once
+	openGate := func() { gateOnce.Do(func() { close(gate) }) }
+	watchdog := time.AfterFunc(60*time.Second, openGate)
+	defer watchdog.Stop()
+	entered := make(chan struct{}, 1)
+	f.app.set(func(context.Context, session.ResolvedChange) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-gate
+	}, nil)
+
+	held := f.create(t)
+	queued := f.create(t)
+	f.svc.StartBuild(context.Background(), held.ID())
+	select {
+	case <-entered:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the first build never reached Apply, so the only slot was never taken")
+	}
+
+	drained := f.watch.wait("build not started; shutting down")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the server is shutting down
+	f.svc.StartBuild(ctx, queued.ID())
+	select {
+	case <-drained:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the queued build never drained; it must not wait for a slot on a dead context")
+	}
+	if got, _ := f.svc.Get(queued.ID()); got.Status() != session.StatusCreating {
+		t.Errorf("drained session status = %s, want CREATING so LoadAll can mark it INTERRUPTED", got.Status())
+	}
+
+	openGate()
+	if got := f.awaitTerminal(t, held.ID(), 60*time.Second); got.Status() != session.StatusReady {
+		t.Fatalf("the running build status = %s err = %+v", got.Status(), got.Error())
+	}
+}
+
+// TestServiceBuildTimeoutIsNotReportedAsARestart pins R31: the build ceiling
+// and a shutdown share the INTERRUPTED code (the code set is fixed) but must
+// not share the message, which would tell the operator a timed-out build was
+// "interrupted by a server restart".
+func TestServiceBuildTimeoutIsNotReportedAsARestart(t *testing.T) {
+	f := newServiceFixture(t)
+	s := f.create(t)
+	// The build ceiling firing: the pipeline's context is past its deadline,
+	// so whatever the dying git process reports, the outcome is the timeout.
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	f.app.set(nil, func(actx context.Context, _ session.ResolvedChange) (ApplyResult, error) {
+		return ApplyResult{}, fmt.Errorf("cherry-pick: %w", actx.Err())
+	})
+	done := f.svc.Build(expired, s.ID())
+	stored, _ := f.svc.Get(s.ID())
+	for _, got := range []session.Session{done, stored} {
+		if got.Status() != session.StatusFailed {
+			t.Fatalf("status = %s, want FAILED", got.Status())
+		}
+		if got.Error() == nil || got.Error().Code != session.CodeInterrupted {
+			t.Fatalf("error = %+v, want code INTERRUPTED", got.Error())
+		}
+		if got.Error().Message != MsgBuildTimedOut() {
+			t.Errorf("message = %q, want the build-timeout message %q", got.Error().Message, MsgBuildTimedOut())
+		}
+		if got.Error().Message == MsgInterrupted() {
+			t.Error("a timed-out build must not claim it was interrupted by a server restart")
+		}
+	}
+}
+
+// TestServiceClassifySeparatesTimeoutFromCancellation covers both shapes each
+// cause arrives in: the context's own state and the error chain.
+func TestServiceClassifySeparatesTimeoutFromCancellation(t *testing.T) {
+	f := newServiceFixture(t)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancelExpired()
+
+	tests := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want string
+	}{
+		{"cancelled context", cancelled, errors.New("signal: killed"), MsgInterrupted()},
+		{"cancelled in the error chain", context.Background(), context.Canceled, MsgInterrupted()},
+		{"expired context", expired, errors.New("signal: killed"), MsgBuildTimedOut()},
+		{"deadline in the error chain", context.Background(), context.DeadlineExceeded, MsgBuildTimedOut()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			re := f.svc.classify(tt.ctx, "0123abcd", tt.err)
+			if re.Code != session.CodeInterrupted {
+				t.Fatalf("code = %s, want INTERRUPTED", re.Code)
+			}
+			if re.Message != tt.want {
+				t.Errorf("message = %q, want %q", re.Message, tt.want)
+			}
+		})
 	}
 }
 

@@ -215,14 +215,29 @@ func (s *Service) Build(ctx context.Context, id string) (final session.Session) 
 }
 
 // classify maps a build error onto the review error code that is recorded on
-// the session. Cancellation is checked first and deliberately outranks the
-// generic git failure the dying git process would otherwise produce: a build
-// cut short by shutdown (or by the build ceiling) is a classified outcome
-// with its own code, and recording it as FAILED/GIT_FAILURE would also take
-// the session out of CREATING, permanently denying LoadAll the chance to mark
-// it INTERRUPTED on the next startup (FR-8.6, design §8.3).
+// the session.
+//
+// Cancellation is checked first and therefore outranks *every* other
+// classification, not just the generic git failure a dying git process
+// produces: once the build's context is dead, any error the pipeline reports
+// — including an already-classified one such as CONFLICT — is recorded as
+// INTERRUPTED. That is deliberate. A context that is cancelled or past the
+// build ceiling means the pipeline was cut short, so a result computed as it
+// was being torn down is not trustworthy enough to record as the review's
+// real outcome; INTERRUPTED says exactly what happened. The cost is that a
+// CONFLICT landing in the same instant as a shutdown is reported as
+// INTERRUPTED rather than as a conflict, which is truthful (the build did not
+// complete) and re-runnable by the operator.
+//
+// The INTERRUPTED code covers two different causes, so the message
+// distinguishes them: a dead context that carries DeadlineExceeded is the
+// 60-minute build ceiling, everything else is a shutdown/discard.
 func (s *Service) classify(ctx context.Context, id string, err error) *session.ReviewError {
 	if isCancellation(ctx, err) {
+		if isDeadline(ctx, err) {
+			s.deps.Log.Info("build timed out", slog.String("session", id))
+			return &session.ReviewError{Code: session.CodeInterrupted, Message: MsgBuildTimedOut()}
+		}
 		s.deps.Log.Info("build interrupted", slog.String("session", id))
 		return &session.ReviewError{Code: session.CodeInterrupted, Message: MsgInterrupted()}
 	}
@@ -242,6 +257,15 @@ func (s *Service) classify(ctx context.Context, id string, err error) *session.R
 func isCancellation(ctx context.Context, err error) bool {
 	return ctx.Err() != nil ||
 		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
+}
+
+// isDeadline reports whether the cancellation was the build ceiling expiring
+// rather than a shutdown or discard. Both the context state and the error
+// chain are inspected for the same reason as isCancellation: a git process
+// killed when the deadline fired reports its own exit error.
+func isDeadline(ctx context.Context, err error) bool {
+	return errors.Is(ctx.Err(), context.DeadlineExceeded) ||
 		errors.Is(err, context.DeadlineExceeded)
 }
 
@@ -273,7 +297,7 @@ func (s *Service) progress(sess session.Session) session.Session {
 // returned session always carries re, so a caller that ignores the status
 // still sees the failure — unless the session already left the active states
 // while the build was running, in which case the stored record wins (see
-// terminalWins) and is returned as itself.
+// session.Store.SaveActive) and is returned as itself.
 func (s *Service) finishWithError(sess session.Session, re *session.ReviewError) session.Session {
 	if re.Diagnostics == nil {
 		re.Diagnostics = &session.Diagnostics{
@@ -289,44 +313,38 @@ func (s *Service) finishWithError(sess session.Session, re *session.ReviewError)
 		s.deps.Log.Info("review failed", slog.String("session", sess.ID()), slog.String("code", string(re.Code)))
 		terminal = sess.Failed(re, s.deps.Now())
 	}
-	// Re-read immediately before the write, not earlier: a Finish or expiry
-	// that landed mid-build has already deleted this session's workspace, so
-	// a status derived from the build's own copy would resurrect it.
-	if stored, dropped := s.terminalWins(sess.ID(), string(re.Code)); dropped {
+	// The status check and the write happen atomically inside the store: a
+	// Finish or expiry that landed mid-build has already deleted this
+	// session's workspace, so a status derived from the build's own copy must
+	// not be written — it would resurrect the record and its directory.
+	stored, err := s.deps.Store.SaveActive(terminal)
+	if err == nil {
 		return stored
 	}
-	// The terminal status is the thing that must survive; if it cannot be
-	// persisted the value is still returned (so the synchronous caller sees
-	// the real outcome) and the failure is logged by persist. A restart then
-	// recovers the session as INTERRUPTED rather than resurrecting it.
-	_ = s.persist(terminal)
+	if errors.Is(err, session.ErrTerminal) {
+		s.logDropped(sess.ID(), stored, string(re.Code))
+		return stored
+	}
+	// Either the session was discarded outright (ErrNotFound) or the write
+	// failed. Nothing was persisted, and there is no stored session to report
+	// instead, so the computed terminal value is still returned — the
+	// synchronous caller must see the real outcome rather than a benign-looking
+	// one — and the failure is logged. A restart then recovers the session as
+	// INTERRUPTED rather than resurrecting it.
+	s.deps.Log.Error("persist terminal status failed",
+		slog.String("session", sess.ID()),
+		slog.String("code", string(re.Code)),
+		slog.String("error", err.Error()))
 	return terminal
 }
 
-// terminalWins re-reads the authoritative record and reports whether the
-// session left the active states (FINISHED or EXPIRED) while the build was
-// running. A build holds its own copy of the session for the whole pipeline,
-// so every transition it computes is derived from a value that may already be
-// stale; Session's own terminal guards inspect that stale copy and therefore
-// cannot see a concurrent Finish. DELETE /api/reviews/{id} is allowed on a
-// CREATING session, so this is reachable in normal use: without the re-read,
-// a build finishing just after a discard writes READY (or FAILED) over
-// FINISHED and Store.Save re-creates the session directory that Cleanup had
-// just removed, leaving a review that reports READY forever while pointing at
-// a deleted worktree.
-//
-// The stored value is returned so the caller reports the session as it truly
-// is rather than as a benign-looking value of its own making.
-func (s *Service) terminalWins(id, reason string) (session.Session, bool) {
-	stored, ok := s.deps.Store.Get(id)
-	if !ok || stored.IsActive() {
-		return session.Session{}, false
-	}
+// logDropped records a transition the store refused because the session had
+// already left the active states while the build was running.
+func (s *Service) logDropped(id string, stored session.Session, reason string) {
 	s.deps.Log.Info("session reached a terminal state during build; transition dropped",
 		slog.String("session", id),
 		slog.String("status", string(stored.Status())),
 		slog.String("dropped", reason))
-	return stored, true
 }
 
 // build is the pipeline proper. Every failure is returned as an error —
@@ -441,28 +459,28 @@ func (s *Service) build(ctx context.Context, live *session.Session) (session.Ses
 			slog.String("error", err.Error()))
 		return *live, &session.ReviewError{Code: session.CodeGitFailure, Message: MsgGitFailure()}
 	}
-	// READY is a transition out of CREATING computed from this build's own
-	// copy, so it must not be written if the session was discarded (or
-	// expired) meanwhile: its workspace is gone and Save would re-create the
-	// directory. Re-read the authoritative record first.
-	if _, ok := s.deps.Store.Get(live.ID()); !ok {
-		return *live, fmt.Errorf("session %s disappeared from the store during the build", live.ID())
-	}
 	ready, err := live.Ready(head, files, totals, s.deps.Now())
 	if err != nil {
 		return *live, fmt.Errorf("mark ready: %w", err)
 	}
-	// Re-read immediately before the write: see terminalWins.
-	if stored, dropped := s.terminalWins(live.ID(), string(session.StatusReady)); dropped {
-		return stored, nil
+	// READY is a transition out of CREATING computed from this build's own
+	// copy, so it must not be written if the session was discarded (or
+	// expired) meanwhile: its workspace is gone and a plain Save would
+	// re-create the directory. SaveActive checks the stored status and writes
+	// under one lock acquisition, so no other mutator can land in between.
+	// READY must also be durable before it is reported: a client told READY
+	// whose record never reached the store would poll a CREATING session
+	// forever, so a write failure is returned as an error.
+	stored, err := s.deps.Store.SaveActive(ready)
+	if err != nil {
+		if errors.Is(err, session.ErrTerminal) {
+			s.logDropped(live.ID(), stored, string(session.StatusReady))
+			return stored, nil
+		}
+		return *live, fmt.Errorf("review: persist ready %s: %w", live.ID(), err)
 	}
-	// READY must be durable before it is reported: a client told READY whose
-	// record never reached the store would poll a CREATING session forever.
-	if err := s.persist(ready); err != nil {
-		return *live, err
-	}
-	s.deps.Log.Info("review ready", slog.String("session", ready.ID()), slog.Int("files", totals.Files))
-	return ready, nil
+	s.deps.Log.Info("review ready", slog.String("session", stored.ID()), slog.Int("files", totals.Files))
+	return stored, nil
 }
 
 // head reads HEAD of the session workspace.

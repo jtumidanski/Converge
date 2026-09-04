@@ -541,3 +541,139 @@ func writeRecord(t *testing.T, st *Store, s Session) {
 	delete(st.index, s.ID()) // simulate a fresh process
 	st.mu.Unlock()
 }
+
+// dirCleaner is a Cleaner that actually removes the session directory, the
+// way the real cleaner does. The fake one only records the call, which cannot
+// show a resurrected directory.
+type dirCleaner struct{ root string }
+
+func (c *dirCleaner) Cleanup(_ context.Context, s Session) error {
+	return os.RemoveAll(filepath.Join(c.root, s.ID()))
+}
+
+func (c *dirCleaner) RemoveDir(_ context.Context, id string) error {
+	return os.RemoveAll(filepath.Join(c.root, id))
+}
+
+// TestSaveActiveGuardsTerminalTransitions pins the compare-and-swap contract:
+// it writes only for an active session, refuses a terminal one (returning the
+// stored session so the caller reports the truth), and refuses an id that is
+// not in the index at all rather than re-creating a record just proven absent.
+func TestSaveActiveGuardsTerminalTransitions(t *testing.T) {
+	now := t0
+	st, _ := newStore(t, &now)
+	s := newSession(t)
+	if err := st.Save(s); err != nil {
+		t.Fatal(err)
+	}
+
+	staged := s.WithStage("applying:1", t0.Add(time.Minute))
+	got, err := st.SaveActive(staged)
+	if err != nil {
+		t.Fatalf("SaveActive on an active session: %v", err)
+	}
+	if got.Stage() != "applying:1" {
+		t.Fatalf("returned stage = %q", got.Stage())
+	}
+	if indexed, _ := st.Get(s.ID()); indexed.Stage() != "applying:1" {
+		t.Fatalf("indexed stage = %q, want the written one", indexed.Stage())
+	}
+	if stage := readStage(t, st, s.ID()); stage != "applying:1" {
+		t.Fatalf("on-disk stage = %q, want the written one", stage)
+	}
+
+	absent, err := NewBuilder().SetID("aaaaaaaa").SetProviderID("gh").SetRepository("a/b").SetBaseBranch("main").
+		SetRequestedChanges([]int{1}).SetCreatedAt(t0).SetTTL(time.Hour).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.SaveActive(absent); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SaveActive on an unknown id = %v, want ErrNotFound", err)
+	}
+	if _, err := os.Stat(st.Dir("aaaaaaaa")); !os.IsNotExist(err) {
+		t.Errorf("SaveActive created a directory for an id that is not in the index: %v", err)
+	}
+
+	if err := st.Finish(context.Background(), s.ID()); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := st.SaveActive(staged.WithStage("diffing", t0.Add(2*time.Minute)))
+	if !errors.Is(err, ErrTerminal) {
+		t.Fatalf("SaveActive on a FINISHED session = %v, want ErrTerminal", err)
+	}
+	if stored.Status() != StatusFinished {
+		t.Fatalf("returned session status = %s, want the stored FINISHED", stored.Status())
+	}
+	if indexed, _ := st.Get(s.ID()); indexed.Status() != StatusFinished {
+		t.Fatalf("indexed status = %s, want FINISHED", indexed.Status())
+	}
+	if stage := readStage(t, st, s.ID()); stage == "diffing" {
+		t.Error("SaveActive wrote a refused transition to disk")
+	}
+}
+
+func readStage(t *testing.T, st *Store, id string) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(st.Dir(id), recordFile))
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	var rec Record
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		t.Fatalf("unmarshal record: %v", err)
+	}
+	if rec.Stage == nil {
+		return ""
+	}
+	return *rec.Stage
+}
+
+// TestSaveActiveIsAtomicWithConcurrentFinish is the C1 regression. The
+// invariant is unconditional: whenever the store reports a session as
+// FINISHED, its directory must be gone. A check-then-write with any gap
+// between the two lets a Finish land in that gap, so the write re-creates the
+// directory Cleanup had just removed and the review reports a live status
+// against a deleted worktree.
+func TestSaveActiveIsAtomicWithConcurrentFinish(t *testing.T) {
+	root := t.TempDir()
+	now := t0
+	st := NewStore(root, 24*time.Hour, &dirCleaner{root: root},
+		slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+		func() time.Time { return now })
+	s := newSession(t)
+	if err := st.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	staged := s.WithStage("diffing", t0.Add(time.Minute))
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var saveErr, finishErr error
+	go func() {
+		defer wg.Done()
+		_, saveErr = st.SaveActive(staged)
+	}()
+	go func() {
+		defer wg.Done()
+		// A small offset so the Finish aims at the middle of the save rather
+		// than racing its start; the invariant below must hold for every
+		// possible interleaving, this one just makes the interesting one likely.
+		time.Sleep(2 * time.Millisecond)
+		finishErr = st.Finish(context.Background(), s.ID())
+	}()
+	wg.Wait()
+
+	if finishErr != nil {
+		t.Fatalf("finish: %v", finishErr)
+	}
+	if saveErr != nil && !errors.Is(saveErr, ErrTerminal) {
+		t.Fatalf("SaveActive = %v, want nil or ErrTerminal", saveErr)
+	}
+	indexed, ok := st.Get(s.ID())
+	if !ok || indexed.Status() != StatusFinished {
+		t.Fatalf("indexed = %+v ok=%v, want FINISHED", indexed.Status(), ok)
+	}
+	if _, err := os.Stat(st.Dir(s.ID())); !os.IsNotExist(err) {
+		t.Fatalf("the session directory of a FINISHED session survives (%v): the write landed after Cleanup and resurrected it", err)
+	}
+}

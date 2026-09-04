@@ -61,6 +61,70 @@ func (s *Store) Dir(id string) string { return filepath.Join(s.root, id) }
 
 // Save writes session.json atomically (temp + fsync + rename) and updates the index.
 func (s *Store) Save(sess Session) error {
+	if err := s.writeRecord(sess); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.index[sess.ID()] = sess
+	delete(s.corrupt, sess.ID()) // a successful write means this id is no longer corrupt
+	s.mu.Unlock()
+	return nil
+}
+
+// SaveActive is Save guarded by a compare-and-swap on the stored status: the
+// write happens only if the indexed session for this id is still active, and
+// the check plus the write happen under a single acquisition of the store's
+// lock, so there is no window in which another mutator can slip a terminal
+// transition between them.
+//
+// This is what a build's terminal writes (READY/FAILED/CONFLICTED) must use.
+// A build holds its own copy of the session for the whole pipeline, so every
+// transition it computes derives from a value that may already be stale, and
+// Session's own terminal guards inspect that stale copy and therefore cannot
+// see a concurrent Finish. DELETE /api/reviews/{id} is allowed on a CREATING
+// session, so this is reachable in normal use: with a plain Save, a build
+// finishing just after a discard writes READY over FINISHED and re-creates
+// the session directory Cleanup had just removed, leaving a review that
+// reports READY forever while pointing at a deleted worktree.
+//
+// Returns:
+//   - (sess, nil) when the write happened;
+//   - (stored, ErrTerminal) when the stored session is FINISHED or EXPIRED —
+//     nothing was written, and the stored value is returned so the caller can
+//     report the session as it truly is;
+//   - (zero, ErrNotFound) when the id is not in the index at all (a discard
+//     removed it): writing would re-create a record just proven absent;
+//   - (zero, err) when the write itself failed.
+//
+// The disk write is deliberately performed while the lock is held. Splitting
+// it out would reopen exactly the check/write gap this method exists to
+// close, and the cost is bounded: terminal writes happen at most once per
+// build and concurrent builds are capped by MAX_CONCURRENT_BUILDS, so the
+// lock is held for a handful of small fsync+rename operations, never for git
+// or network work (Cleanup still runs outside the lock — see Finish).
+func (s *Store) SaveActive(sess Session) (Session, error) {
+	id := sess.ID()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stored, ok := s.index[id]
+	if !ok {
+		return Session{}, fmt.Errorf("session %s: %w", id, ErrNotFound)
+	}
+	if !stored.IsActive() {
+		return stored, fmt.Errorf("session %s is %s: %w", id, stored.Status(), ErrTerminal)
+	}
+	if err := s.writeRecord(sess); err != nil {
+		return Session{}, err
+	}
+	s.index[id] = sess
+	delete(s.corrupt, id)
+	return sess, nil
+}
+
+// writeRecord writes session.json atomically (temp + fsync + rename). It
+// takes no locks so it can be called either standalone (Save) or with the
+// store's lock already held (SaveActive).
+func (s *Store) writeRecord(sess Session) error {
 	dir := s.Dir(sess.ID())
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("session: mkdir: %w", err)
@@ -89,10 +153,6 @@ func (s *Store) Save(sess Session) error {
 	if err := os.Rename(tmpName, filepath.Join(dir, recordFile)); err != nil {
 		return fmt.Errorf("session: rename: %w", err)
 	}
-	s.mu.Lock()
-	s.index[sess.ID()] = sess
-	delete(s.corrupt, sess.ID()) // a successful write means this id is no longer corrupt
-	s.mu.Unlock()
 	return nil
 }
 

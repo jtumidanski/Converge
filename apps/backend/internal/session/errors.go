@@ -5,6 +5,12 @@ import "errors"
 // ErrNotFound is returned for unknown session IDs.
 var ErrNotFound = errors.New("session: not found")
 
+// ErrTerminal reports that the stored session already left the active states
+// (FINISHED or EXPIRED), so a write derived from an older copy of it was
+// refused. SaveActive returns it together with the stored session, so the
+// caller can report the session as it truly is.
+var ErrTerminal = errors.New("session: already terminal")
+
 // Diagnostics carries operator-facing details; the UI shows them only under "Diagnostics".
 type Diagnostics struct {
 	WorkspacePath string `json:"workspacePath,omitempty"`
