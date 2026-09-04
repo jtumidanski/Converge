@@ -3,6 +3,7 @@ package provider
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -14,7 +15,7 @@ func TestStatusErrorMapping(t *testing.T) {
 		if !errors.Is(err, want) {
 			t.Errorf("%d -> %v, want %v", status, err, want)
 		}
-		if !strings.Contains(err.Error(), "GET /x") || !strings.Contains(err.Error(), "418"[:0]+"") {
+		if !strings.Contains(err.Error(), "GET /x") || !strings.Contains(err.Error(), strconv.Itoa(status)) {
 			t.Errorf("message = %q", err.Error())
 		}
 	}

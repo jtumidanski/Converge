@@ -20,7 +20,6 @@ linters:
     gosec:
       excludes:
         - G204 # subprocess launched with variable: every git call is validated argument-slice exec
-        - G704 # SSRF taint: provider.DoJSON is a generic HTTP helper; callers build requests against a configured provider BaseURL, not user-supplied URLs
     revive:
       rules:
         - name: exported

@@ -10,6 +10,7 @@ import (
 
 // DoJSON performs req, maps non-2xx statuses to *StatusError, and decodes JSON into out.
 func DoJSON(ctx context.Context, client *http.Client, req *http.Request, out any) (http.Header, error) {
+	//nolint:gosec // G704: req is built by callers from the configured provider BaseURL and fixed API paths, not from user-supplied URLs
 	resp, err := client.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("%s %s: %w", req.Method, req.URL.Path, ErrUnavailable)

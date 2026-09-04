@@ -21,3 +21,11 @@ type GitProvider interface {
 	// AuthorizeGit attaches credentials to spec via environment only.
 	AuthorizeGit(repo Repository, spec *gitx.Spec) error
 }
+
+// GitUser is the Basic-auth username each provider accepts for tokens.
+func GitUser(kind Kind) string {
+	if kind == KindGitHub {
+		return "x-access-token"
+	}
+	return "oauth2"
+}
