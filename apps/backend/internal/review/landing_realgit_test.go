@@ -89,6 +89,30 @@ func TestResolveLandingRealSquashOfManyCommits(t *testing.T) {
 	}
 }
 
+// TestResolveLandingRealSquashEmptyDiff covers the one-parent, N>1,
+// patch-ids-do-not-match, empty-diff branch on a genuine squash whose net
+// tree change is identical to main (an add followed by a revert on the
+// feature branch), so the squash-merge commit itself carries no diff and the
+// change must fail as BASE_UNDETERMINED rather than guess.
+func TestResolveLandingRealSquashEmptyDiff(t *testing.T) {
+	r := testutil.NewRepo(t)
+	r.Commit("x.txt", "0\n", "seed")
+	r.Branch("feature")
+	c1 := r.Commit("x.txt", "1\n", "c1")
+	c2 := r.Commit("x.txt", "0\n", "c2 (revert)")
+	r.Checkout("main")
+	r.Git("merge", "--squash", "feature")
+	r.Git("commit", "--allow-empty", "-m", "Squash feature (empty diff)")
+	squashSHA := r.Head()
+
+	o := realObjects(t, r)
+	_, err := ResolveLanding(context.Background(), o, change(t, squashSHA, "", c2, 2), commits(t, c1, c2))
+	var re *session.ReviewError
+	if !errors.As(err, &re) || re.Code != session.CodeBaseUndetermined {
+		t.Fatalf("err = %v, want CodeBaseUndetermined", err)
+	}
+}
+
 // TestResolveLandingRealRebase covers the one-parent, N>1, patch-ids-match
 // branch on a genuine `git rebase` that rewrites the feature branch's SHAs.
 func TestResolveLandingRealRebase(t *testing.T) {

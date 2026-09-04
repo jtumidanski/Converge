@@ -81,7 +81,12 @@ func resolveSingleParent(ctx context.Context, o mirror.ObjectReader, cr provider
 		n = cr.CommitCount()
 	}
 	if n <= 0 {
-		n = 1
+		// No commit information is available at all (empty commit list and a
+		// non-positive reported count). Guessing n=1 here would skip every
+		// verification step and return a confident-but-unverified Landing.
+		// Fail visibly instead: this is exactly the "never guess" case FR-5.5
+		// exists to catch.
+		return Landing{}, undetermined(cr.Number(), "the change's commit information was unavailable")
 	}
 	walk, err := o.FirstParentWalk(ctx, found, n)
 	if err != nil {
@@ -102,13 +107,20 @@ func resolveSingleParent(ctx context.Context, o mirror.ObjectReader, cr provider
 	if n == 1 {
 		return Landing{Strategy: session.StrategySquash, SHAs: []string{found}, SourceSHA: found}, nil
 	}
-	// A squash of several commits: accept only when the candidate has a non-empty diff.
-	pid, err := o.PatchID(ctx, found)
-	if err != nil {
-		return Landing{}, err
-	}
-	if pid == "" {
-		return Landing{}, undetermined(cr.Number(), fmt.Sprintf("commit %s carries no changes and does not match the reported commits", found[:7]))
+	// A squash of several commits whose patch-ids didn't match the originals.
+	// Design §6.2: when the provider does not itself confirm this was a
+	// squash, accept it as one only when the candidate carries a non-empty
+	// diff; when the provider's Squashed flag is true, it has already told us
+	// this candidate is the squash result, so the diff re-derivation below is
+	// redundant and skipped.
+	if !cr.Squashed() {
+		pid, err := o.PatchID(ctx, found)
+		if err != nil {
+			return Landing{}, err
+		}
+		if pid == "" {
+			return Landing{}, undetermined(cr.Number(), fmt.Sprintf("commit %s carries no changes and does not match the reported commits", found[:7]))
+		}
 	}
 	return Landing{Strategy: session.StrategySquash, SHAs: []string{found}, SourceSHA: found}, nil
 }
@@ -127,9 +139,23 @@ func patchIDsMatch(ctx context.Context, o mirror.ObjectReader, walk []string, co
 		counts[id]++
 	}
 	for _, c := range commits {
+		// Check for genuine absence first: PatchID's error is not
+		// classifiable (mirror.objects.PatchID never distinguishes "object
+		// not present" from a fatal git failure the way Exists does), so an
+		// unconditional swallow on PatchID error would hide real failures
+		// behind an "originally gone after rebase" story. Only a clean
+		// Exists()==(false, nil) tells us the object is genuinely absent;
+		// everything else propagates.
+		ok, err := o.Exists(ctx, c.SHA())
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return false, nil // genuinely absent, e.g. gone after a rebase
+		}
 		id, err := o.PatchID(ctx, c.SHA())
 		if err != nil {
-			return false, nil // the original commit may be gone after a rebase
+			return false, err
 		}
 		if id == "" {
 			return false, nil
