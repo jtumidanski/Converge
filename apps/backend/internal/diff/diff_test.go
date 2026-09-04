@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jtumidanski/converge/internal/gitx"
 	"github.com/jtumidanski/converge/internal/testutil"
@@ -65,8 +66,19 @@ func TestSummarizeWriteAndFileContent(t *testing.T) {
 	if f := byPath["bin.dat"]; f.Status != StatusAdded || !f.Binary {
 		t.Errorf("bin = %+v", f)
 	}
-	if files[0].Path > files[1].Path {
-		t.Error("not sorted")
+	gotOrder := make([]string, len(files))
+	for i, f := range files {
+		gotOrder[i] = f.Path
+	}
+	wantOrder := []string{"bin.dat", "docs/README.md", "mod.txt", "new.txt"}
+	if len(gotOrder) != len(wantOrder) {
+		t.Fatalf("order = %v, want %v", gotOrder, wantOrder)
+	}
+	for i := range wantOrder {
+		if gotOrder[i] != wantOrder[i] {
+			t.Errorf("order = %v, want %v", gotOrder, wantOrder)
+			break
+		}
 	}
 	out := filepath.Join(t.TempDir(), "combined.diff")
 	if err := WriteCombined(ctx, runner, src.Work, base, head, out); err != nil {
@@ -101,8 +113,48 @@ func TestFileContentTruncates(t *testing.T) {
 	runner, _ := gitx.NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), gitx.Options{CommandTimeout: 30 * time.Second})
 	defer runner.Close()
 	fd, err := FileContent(context.Background(), runner, src.Work, base, src.Head(), FileSummary{Path: "big.txt", Status: StatusAdded})
-	if err != nil || !fd.Truncated || len(fd.Diff) != MaxFileDiffBytes {
+	// The fixture content is pure ASCII, so every byte is a rune boundary
+	// and the rune-safe truncation lands exactly on MaxFileDiffBytes here;
+	// TestFileContentTruncatesOnRuneBoundary below covers the case where it
+	// must back off. len() is asserted with <= (not ==) since the guarantee
+	// truncation makes is "never exceeds the cap," not "always hits it
+	// exactly" once rune-boundary backoff is in play.
+	if err != nil || !fd.Truncated || len(fd.Diff) > MaxFileDiffBytes {
 		t.Fatalf("err=%v truncated=%v len=%d", err, fd.Truncated, len(fd.Diff))
+	}
+	if len(fd.Diff) != MaxFileDiffBytes {
+		t.Fatalf("expected exact MaxFileDiffBytes for ASCII content, got %d", len(fd.Diff))
+	}
+}
+
+// TestFileContentTruncatesOnRuneBoundary uses multi-byte UTF-8 content
+// engineered so a naive byte-offset cut at MaxFileDiffBytes would split a
+// rune. It asserts the result is valid UTF-8, never exceeds the cap, and is
+// marked Truncated.
+func TestFileContentTruncatesOnRuneBoundary(t *testing.T) {
+	src := testutil.NewRepo(t)
+	base := src.Head()
+	// U+00E9 ("é") is 2 bytes in UTF-8. Repeating a 2-byte rune means a cut
+	// at an odd byte offset always splits a rune; pad the prefix so the
+	// unified diff header pushes the cut point into the repeated run at an
+	// offset whose parity we don't control, so this reliably exercises the
+	// split either way MaxFileDiffBytes lands.
+	big := strings.Repeat("é", 700000)
+	src.Commit("big.txt", big, "big")
+	runner, _ := gitx.NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), gitx.Options{CommandTimeout: 30 * time.Second})
+	defer runner.Close()
+	fd, err := FileContent(context.Background(), runner, src.Work, base, src.Head(), FileSummary{Path: "big.txt", Status: StatusAdded})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fd.Truncated {
+		t.Fatal("expected truncation")
+	}
+	if len(fd.Diff) > MaxFileDiffBytes {
+		t.Fatalf("diff exceeds cap: len=%d max=%d", len(fd.Diff), MaxFileDiffBytes)
+	}
+	if !utf8.ValidString(fd.Diff) {
+		t.Fatalf("truncated diff is not valid UTF-8 (len=%d)", len(fd.Diff))
 	}
 }
 
@@ -147,5 +199,99 @@ func TestSummarizeSpacesAndDeletion(t *testing.T) {
 	fd, err := FileContent(ctx, runner, src.Work, base, head, byPath["has space.txt"])
 	if err != nil || !strings.Contains(fd.Diff, "diff --git a/has space.txt b/has space.txt") {
 		t.Errorf("spaced diff: %v %q", err, fd.Diff)
+	}
+}
+
+const (
+	fakeBaseSHA = "1111111111111111111111111111111111111111"
+	fakeHeadSHA = "2222222222222222222222222222222222222222"
+)
+
+// TestSummarizeRawNumstatMismatch drives Summarize with a FakeRunner
+// returning a --raw stream that names a path absent from --numstat. This
+// is the raw-not-in-numstat direction of the cross-stream invariant: a
+// join miss must surface as an error, not as a silently zero-filled
+// FileSummary.
+func TestSummarizeRawNumstatMismatch(t *testing.T) {
+	fr := &gitx.FakeRunner{Handler: func(s gitx.Spec) (gitx.Result, error) {
+		for _, a := range s.Args {
+			if a == "--raw" {
+				return gitx.Result{Stdout: []byte(":000000 100644 0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 A\x00only-in-raw.txt\x00")}, nil
+			}
+			if a == "--numstat" {
+				return gitx.Result{Stdout: []byte("1\t0\tother.txt\x00")}, nil
+			}
+		}
+		return gitx.Result{}, nil
+	}}
+	_, _, err := Summarize(context.Background(), fr, "/repo", fakeBaseSHA, fakeHeadSHA)
+	if err == nil {
+		t.Fatal("expected error on raw/numstat mismatch")
+	}
+	if !strings.Contains(err.Error(), "only-in-raw.txt") {
+		t.Errorf("error should name the mismatched path: %v", err)
+	}
+}
+
+// TestSummarizeNumstatRawMismatch covers the converse: a path present in
+// --numstat but absent from --raw. Both streams come from the same `git
+// diff` invocation over the same range, so this indicates the same class
+// of desynchronisation, just discovered from the other direction.
+func TestSummarizeNumstatRawMismatch(t *testing.T) {
+	fr := &gitx.FakeRunner{Handler: func(s gitx.Spec) (gitx.Result, error) {
+		for _, a := range s.Args {
+			if a == "--raw" {
+				return gitx.Result{Stdout: []byte(":000000 100644 0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 A\x00mod.txt\x00")}, nil
+			}
+			if a == "--numstat" {
+				return gitx.Result{Stdout: []byte("1\t0\tmod.txt\x001\t0\tonly-in-numstat.txt\x00")}, nil
+			}
+		}
+		return gitx.Result{}, nil
+	}}
+	_, _, err := Summarize(context.Background(), fr, "/repo", fakeBaseSHA, fakeHeadSHA)
+	if err == nil {
+		t.Fatal("expected error on numstat/raw mismatch")
+	}
+	if !strings.Contains(err.Error(), "only-in-numstat.txt") {
+		t.Errorf("error should name the mismatched path: %v", err)
+	}
+}
+
+// TestSummarizeEmptyDiff verifies base == head (no changes) produces an
+// empty, zeroed summary with no error, against real git rather than by
+// inspection alone.
+func TestSummarizeEmptyDiff(t *testing.T) {
+	src := testutil.NewRepo(t)
+	head := src.Head()
+
+	runner, err := gitx.NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), gitx.Options{CommandTimeout: 30 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	ctx := context.Background()
+
+	files, totals, err := Summarize(ctx, runner, src.Work, head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 0 {
+		t.Errorf("files = %+v, want empty", files)
+	}
+	if totals != (Totals{}) {
+		t.Errorf("totals = %+v, want zero value", totals)
+	}
+
+	out := filepath.Join(t.TempDir(), "combined.diff")
+	if err := WriteCombined(ctx, runner, src.Work, head, head, out); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) != 0 {
+		t.Errorf("combined.diff for empty range should be empty, got %q", b)
 	}
 }

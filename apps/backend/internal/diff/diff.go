@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"unicode/utf8"
 
 	"github.com/jtumidanski/converge/internal/gitx"
 )
@@ -110,13 +111,29 @@ func Summarize(ctx context.Context, r gitx.Runner, repoDir, base, head string) (
 	}
 	files := make([]FileSummary, 0, len(raws))
 	var totals Totals
+	seen := make(map[string]struct{}, len(raws))
 	for _, e := range raws {
-		n := counts[e.Path]
+		n, ok := counts[e.Path]
+		if !ok {
+			return nil, Totals{}, fmt.Errorf("diff: raw/numstat mismatch: %s present in --raw but missing from --numstat", e.Path)
+		}
+		seen[e.Path] = struct{}{}
 		f := FileSummary{Path: e.Path, PreviousPath: e.PreviousPath, Status: e.Status, Additions: n.Additions, Deletions: n.Deletions, Binary: n.Binary}
 		files = append(files, f)
 		totals.Files++
 		totals.Additions += f.Additions
 		totals.Deletions += f.Deletions
+	}
+	// The converse (a --numstat path absent from --raw) is checked too: both
+	// streams are produced by the same `git diff` invocation over the same
+	// range, so a --numstat-only path indicates the same class of stream
+	// desynchronisation as a --raw-only path, just discovered from the other
+	// direction. Catching it here surfaces the inconsistency instead of
+	// silently dropping the file from the summary.
+	for _, n := range nums {
+		if _, ok := seen[n.Path]; !ok {
+			return nil, Totals{}, fmt.Errorf("diff: raw/numstat mismatch: %s present in --numstat but missing from --raw", n.Path)
+		}
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files, totals, nil
@@ -147,9 +164,20 @@ func FileContent(ctx context.Context, r gitx.Runner, repoDir, base, head string,
 	}
 	text := res.Stdout
 	if len(text) > MaxFileDiffBytes {
-		text = text[:MaxFileDiffBytes]
+		text = truncateToRuneBoundary(text, MaxFileDiffBytes)
 		out.Truncated = true
 	}
 	out.Diff = string(text)
 	return out, nil
+}
+
+// truncateToRuneBoundary cuts b to at most max bytes, backing off from max
+// until it lands on a UTF-8 rune boundary so the result is never invalid
+// UTF-8. The returned slice is always <= max bytes.
+func truncateToRuneBoundary(b []byte, max int) []byte {
+	cut := max
+	for cut > 0 && !utf8.RuneStart(b[cut]) {
+		cut--
+	}
+	return b[:cut]
 }

@@ -25,6 +25,32 @@ func TestParseRaw(t *testing.T) {
 	}
 }
 
+// TestParseRawCopy exercises the 'C' (copy) record form. Real git only
+// emits this with --find-copies, which no production caller passes, so
+// this fixture is hand-written to keep the branch covered and to prove a
+// copy record consumes the same 3 tokens as a rename (header, source,
+// dest) without desynchronising subsequent records.
+func TestParseRawCopy(t *testing.T) {
+	in := []byte(":100644 100644 7777777777777777777777777777777777777777 8888888888888888888888888888888888888888 C090\x00src/orig.go\x00src/copy.go\x00" +
+		":100644 100644 2222222222222222222222222222222222222222 3333333333333333333333333333333333333333 M\x00mod.txt\x00")
+	got, err := parseRaw(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []rawEntry{
+		{Path: "src/copy.go", PreviousPath: "src/orig.go", Status: StatusRenamed},
+		{Path: "mod.txt", PreviousPath: "", Status: StatusModified},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("%d: got %+v want %+v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestParseNumstat(t *testing.T) {
 	in := []byte("3\t1\tmod.txt\x00-\t-\timg.png\x0010\t0\t\x00old/name.go\x00new/name.go\x00")
 	got, err := parseNumstat(in)
