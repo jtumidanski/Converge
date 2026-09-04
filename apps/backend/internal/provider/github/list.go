@@ -25,10 +25,20 @@ func (c *Client) scanKey(repo provider.Repository, target string) string {
 	return repo.FullName() + "\x00" + target
 }
 
-// ensureScanned returns merged PRs for (repo, target), fetching provider pages
-// until at least `need` items are collected, the provider runs out, or MaxScanPages is hit.
-// need < 0 means "scan until exhausted or capped".
-func (c *Client) ensureScanned(ctx context.Context, repo provider.Repository, target string, need int) (*scanEntry, error) {
+// scanSnapshot is a point-in-time copy of a scanEntry's fields, safe to read
+// without holding c.mu. ensureScanned must never return the live *scanEntry:
+// the cache is keyed by (repo, target) and a concurrent call for the same key
+// can keep mutating entry.items/nextPage/capped after the lock is released.
+type scanSnapshot struct {
+	items    []provider.ChangeRequest
+	nextPage int
+	capped   bool
+}
+
+// ensureScanned returns a snapshot of merged PRs for (repo, target), fetching
+// provider pages until at least `need` items are collected, the provider runs
+// out, or MaxScanPages is hit. need < 0 means "scan until exhausted or capped".
+func (c *Client) ensureScanned(ctx context.Context, repo provider.Repository, target string, need int) (scanSnapshot, error) {
 	key := c.scanKey(repo, target)
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -53,7 +63,7 @@ func (c *Client) ensureScanned(ctx context.Context, repo provider.Repository, ta
 		var raw []pullJSON
 		hasNext, err := c.get(ctx, "/repos/"+repo.FullName()+"/pulls", q, &raw)
 		if err != nil {
-			return nil, err
+			return scanSnapshot{}, err
 		}
 		for _, p := range raw {
 			if p.MergedAt == nil || p.Base.Ref != target {
@@ -61,7 +71,7 @@ func (c *Client) ensureScanned(ctx context.Context, repo provider.Repository, ta
 			}
 			cr, err := p.toModel(c.id, repo)
 			if err != nil {
-				return nil, err
+				return scanSnapshot{}, err
 			}
 			entry.items = append(entry.items, cr)
 		}
@@ -71,7 +81,9 @@ func (c *Client) ensureScanned(ctx context.Context, repo provider.Repository, ta
 			entry.nextPage = 0
 		}
 	}
-	return entry, nil
+	items := make([]provider.ChangeRequest, len(entry.items))
+	copy(items, entry.items)
+	return scanSnapshot{items: items, nextPage: entry.nextPage, capped: entry.capped}, nil
 }
 
 // ListMergedChanges lists merged pull requests targeting target, optionally
