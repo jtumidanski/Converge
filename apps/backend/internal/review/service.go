@@ -151,7 +151,16 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (session.Session, 
 // the next startup's LoadAll records them as INTERRUPTED.
 func (s *Service) StartBuild(ctx context.Context, id string) {
 	go func() {
-		s.sem <- struct{}{}
+		// Waiting for a slot is cancellable: on shutdown a queued build must
+		// drain instead of acquiring a slot only to run a pipeline whose
+		// context is already dead. A session that never starts stays CREATING,
+		// so the next startup's LoadAll records it as INTERRUPTED (FR-8.6).
+		select {
+		case s.sem <- struct{}{}:
+		case <-ctx.Done():
+			s.deps.Log.Info("build not started; shutting down", slog.String("session", id))
+			return
+		}
 		defer func() { <-s.sem }()
 		buildCtx, cancel := context.WithTimeout(ctx, buildCeiling)
 		defer cancel()
@@ -165,8 +174,10 @@ func (s *Service) StartBuild(ctx context.Context, id string) {
 // own error code; nothing is downgraded to a benign-looking result. The one
 // case that cannot be reported through the session (the signature carries no
 // error) is an id that is not in the store at all: there is no session to
-// mark, so a zero Session is returned — its status is the empty string, never
-// READY — and the condition is logged at Error level.
+// mark, so a zero Session is returned. It is unambiguous because every real
+// session has a non-empty id: callers distinguish "unknown id" from any
+// pipeline outcome with final.ID() == "" (its status is likewise the empty
+// string, never READY), and the condition is logged at Error level.
 func (s *Service) Build(ctx context.Context, id string) (final session.Session) {
 	sess, ok := s.deps.Store.Get(id)
 	if !ok {
@@ -177,35 +188,61 @@ func (s *Service) Build(ctx context.Context, id string) (final session.Session) 
 		// Rebuilding a session that already reached a terminal or READY state
 		// would recreate a workspace for a session whose workspace may have
 		// been cleaned up. Report what it actually is instead.
-		s.deps.Log.Warn("build skipped for non-creating session",
+		s.deps.Log.Warn("build skipped: session is not CREATING, no pipeline was run",
 			slog.String("session", id),
 			slog.String("status", string(sess.Status())))
 		return sess
 	}
+	// live is the pipeline's running state. build updates it in place as each
+	// stage lands, so a failure (or a panic) records the terminal status on
+	// the session as it actually is — base SHA, resolved changes and stage
+	// included (FR-8.3) — rather than rolling back to this pre-build snapshot.
+	live := sess
 	defer func() {
 		if r := recover(); r != nil {
 			s.deps.Log.Error("build panicked", slog.String("session", id), slog.Any("panic", r))
-			final = s.finishWithError(sess, &session.ReviewError{
+			final = s.finishWithError(live, &session.ReviewError{
 				Code:    session.CodeGitFailure,
 				Message: MsgGitFailure(),
 			})
 		}
 	}()
-	built, err := s.build(ctx, sess)
+	built, err := s.build(ctx, &live)
 	if err != nil {
-		re := asReviewError(err)
-		if re == nil {
-			// An error that is not already classified is an internal build
-			// failure. Log the real reason (never surfaced to the client) so
-			// the generic code does not hide what happened.
-			s.deps.Log.Error("build failed",
-				slog.String("session", id),
-				slog.String("error", err.Error()))
-			re = &session.ReviewError{Code: session.CodeGitFailure, Message: MsgGitFailure()}
-		}
-		return s.finishWithError(sess, re)
+		return s.finishWithError(live, s.classify(ctx, id, err))
 	}
 	return built
+}
+
+// classify maps a build error onto the review error code that is recorded on
+// the session. Cancellation is checked first and deliberately outranks the
+// generic git failure the dying git process would otherwise produce: a build
+// cut short by shutdown (or by the build ceiling) is a classified outcome
+// with its own code, and recording it as FAILED/GIT_FAILURE would also take
+// the session out of CREATING, permanently denying LoadAll the chance to mark
+// it INTERRUPTED on the next startup (FR-8.6, design §8.3).
+func (s *Service) classify(ctx context.Context, id string, err error) *session.ReviewError {
+	if isCancellation(ctx, err) {
+		s.deps.Log.Info("build interrupted", slog.String("session", id))
+		return &session.ReviewError{Code: session.CodeInterrupted, Message: MsgInterrupted()}
+	}
+	if re := asReviewError(err); re != nil {
+		return re
+	}
+	// An error that is not already classified is an internal build failure.
+	// Log the real reason (never surfaced to the client) so the generic code
+	// does not hide what happened.
+	s.deps.Log.Error("build failed", slog.String("session", id), slog.String("error", err.Error()))
+	return &session.ReviewError{Code: session.CodeGitFailure, Message: MsgGitFailure()}
+}
+
+// isCancellation reports whether the build's context was cut short. Both the
+// context state and the error chain are inspected: a git process killed by
+// cancellation reports its own exit error, which carries no context sentinel.
+func isCancellation(ctx context.Context, err error) bool {
+	return ctx.Err() != nil ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
 }
 
 // persist writes a session through the store. A persistence failure is
@@ -234,7 +271,9 @@ func (s *Service) progress(sess session.Session) session.Session {
 
 // finishWithError records CONFLICTED for conflicts and FAILED otherwise. The
 // returned session always carries re, so a caller that ignores the status
-// still sees the failure.
+// still sees the failure — unless the session already left the active states
+// while the build was running, in which case the stored record wins (see
+// terminalWins) and is returned as itself.
 func (s *Service) finishWithError(sess session.Session, re *session.ReviewError) session.Session {
 	if re.Diagnostics == nil {
 		re.Diagnostics = &session.Diagnostics{
@@ -250,6 +289,12 @@ func (s *Service) finishWithError(sess session.Session, re *session.ReviewError)
 		s.deps.Log.Info("review failed", slog.String("session", sess.ID()), slog.String("code", string(re.Code)))
 		terminal = sess.Failed(re, s.deps.Now())
 	}
+	// Re-read immediately before the write, not earlier: a Finish or expiry
+	// that landed mid-build has already deleted this session's workspace, so
+	// a status derived from the build's own copy would resurrect it.
+	if stored, dropped := s.terminalWins(sess.ID(), string(re.Code)); dropped {
+		return stored
+	}
 	// The terminal status is the thing that must survive; if it cannot be
 	// persisted the value is still returned (so the synchronous caller sees
 	// the real outcome) and the failure is logged by persist. A restart then
@@ -258,67 +303,97 @@ func (s *Service) finishWithError(sess session.Session, re *session.ReviewError)
 	return terminal
 }
 
+// terminalWins re-reads the authoritative record and reports whether the
+// session left the active states (FINISHED or EXPIRED) while the build was
+// running. A build holds its own copy of the session for the whole pipeline,
+// so every transition it computes is derived from a value that may already be
+// stale; Session's own terminal guards inspect that stale copy and therefore
+// cannot see a concurrent Finish. DELETE /api/reviews/{id} is allowed on a
+// CREATING session, so this is reachable in normal use: without the re-read,
+// a build finishing just after a discard writes READY (or FAILED) over
+// FINISHED and Store.Save re-creates the session directory that Cleanup had
+// just removed, leaving a review that reports READY forever while pointing at
+// a deleted worktree.
+//
+// The stored value is returned so the caller reports the session as it truly
+// is rather than as a benign-looking value of its own making.
+func (s *Service) terminalWins(id, reason string) (session.Session, bool) {
+	stored, ok := s.deps.Store.Get(id)
+	if !ok || stored.IsActive() {
+		return session.Session{}, false
+	}
+	s.deps.Log.Info("session reached a terminal state during build; transition dropped",
+		slog.String("session", id),
+		slog.String("status", string(stored.Status())),
+		slog.String("dropped", reason))
+	return stored, true
+}
+
 // build is the pipeline proper. Every failure is returned as an error —
 // classified as a *session.ReviewError wherever the cause is known — and
 // never as a partially-populated session with a nil error.
-func (s *Service) build(ctx context.Context, sess session.Session) (session.Session, error) {
-	p, ok := s.deps.Providers.Get(sess.ProviderID())
+//
+// live is the caller's running copy of the session and is updated in place as
+// each stage lands, so the caller can record a terminal status on the session
+// as it actually is (base SHA, resolved changes, stage) instead of on the
+// pre-build snapshot. It is only ever touched from the build's own goroutine.
+func (s *Service) build(ctx context.Context, live *session.Session) (session.Session, error) {
+	p, ok := s.deps.Providers.Get(live.ProviderID())
 	if !ok {
-		return session.Session{}, &session.ReviewError{
+		return *live, &session.ReviewError{
 			Code:    session.CodeProviderUnavailable,
-			Message: MsgProviderUnavailable(sess.ProviderID()),
+			Message: MsgProviderUnavailable(live.ProviderID()),
 		}
 	}
-	repo, err := p.GetRepository(ctx, sess.Repository())
+	repo, err := p.GetRepository(ctx, live.Repository())
 	if err != nil {
-		if re := MapProviderError(p.ID(), sess.Repository(), err); re != nil {
-			return session.Session{}, re
+		if re := MapProviderError(p.ID(), live.Repository(), err); re != nil {
+			return *live, re
 		}
-		return session.Session{}, &session.ReviewError{
+		return *live, &session.ReviewError{
 			Code:    session.CodeRepositoryUnavailable,
-			Message: MsgRepositoryUnavailable(sess.Repository()),
+			Message: MsgRepositoryUnavailable(live.Repository()),
 		}
 	}
 
-	current := sess
-	report := func(stage string) { current = s.progress(current.WithStage(stage, s.deps.Now())) }
-	resolved, err := s.resolver.Resolve(ctx, p, repo, sess.BaseBranch(), sess.RequestedChanges(), report)
+	report := func(stage string) { *live = s.progress(live.WithStage(stage, s.deps.Now())) }
+	resolved, err := s.resolver.Resolve(ctx, p, repo, live.BaseBranch(), live.RequestedChanges(), report)
 	if err != nil {
-		return session.Session{}, err
+		return *live, err
 	}
-	current = s.progress(current.WithResolved(resolved.Changes, s.deps.Now()))
-	current, err = current.WithBase(resolved.BaseSHA, s.deps.Now())
+	*live = s.progress(live.WithResolved(resolved.Changes, s.deps.Now()))
+	based, err := live.WithBase(resolved.BaseSHA, s.deps.Now())
 	if err != nil {
-		return session.Session{}, fmt.Errorf("record base sha: %w", err)
+		return *live, fmt.Errorf("record base sha: %w", err)
 	}
-	current = s.progress(current)
+	*live = s.progress(based)
 
 	report(session.StageCreatingWorkspace)
-	repoDir, err := s.deps.Workspaces.Create(ctx, resolved.MirrorPath, current.ID(), resolved.BaseSHA)
+	repoDir, err := s.deps.Workspaces.Create(ctx, resolved.MirrorPath, live.ID(), resolved.BaseSHA)
 	if err != nil {
 		s.deps.Log.Error("create workspace failed",
-			slog.String("session", current.ID()),
+			slog.String("session", live.ID()),
 			slog.String("error", err.Error()))
-		return session.Session{}, &session.ReviewError{Code: session.CodeGitFailure, Message: MsgGitFailure()}
+		return *live, &session.ReviewError{Code: session.CodeGitFailure, Message: MsgGitFailure()}
 	}
 
 	applied := make([]int, 0, len(resolved.Changes))
 	for i, rc := range resolved.Changes {
 		report(fmt.Sprintf("%s%d", session.StageApplyingPrefix, rc.Number()))
-		res, err := s.deps.Applicator.Apply(ctx, repoDir, current.ProviderID(), rc)
+		res, err := s.deps.Applicator.Apply(ctx, repoDir, live.ProviderID(), rc)
 		if err != nil {
 			s.deps.Log.Error("apply change failed",
-				slog.String("session", current.ID()),
+				slog.String("session", live.ID()),
 				slog.Int("change", rc.Number()),
 				slog.String("error", err.Error()))
-			return session.Session{}, &session.ReviewError{
+			return *live, &session.ReviewError{
 				Code: session.CodeGitFailure, Message: MsgGitFailure(), Change: rc.Number(),
 			}
 		}
 		switch res.Outcome {
 		case OutcomeConflict:
 			dependency := i > 0
-			return session.Session{}, &session.ReviewError{
+			return *live, &session.ReviewError{
 				Code:               session.CodeConflict,
 				Message:            MsgConflict(rc.Number(), dependency),
 				Change:             rc.Number(),
@@ -328,7 +403,7 @@ func (s *Service) build(ctx context.Context, sess session.Session) (session.Sess
 				PossibleDependency: dependency,
 				Diagnostics: &session.Diagnostics{
 					WorkspacePath: repoDir,
-					Branch:        s.deps.Workspaces.BranchName(current.ID()),
+					Branch:        s.deps.Workspaces.BranchName(live.ID()),
 					Strategy:      string(rc.Strategy()),
 					SourceSHA:     rc.SourceSHA(),
 				},
@@ -340,40 +415,51 @@ func (s *Service) build(ctx context.Context, sess session.Session) (session.Sess
 		default:
 			// An unrecognised outcome is a programming error, not a review
 			// result. Fail rather than pretend the change applied.
-			return session.Session{}, fmt.Errorf("apply #%d: unknown outcome %q", rc.Number(), res.Outcome)
+			return *live, fmt.Errorf("apply #%d: unknown outcome %q", rc.Number(), res.Outcome)
 		}
 	}
 
 	report(session.StageDiffing)
-	head, err := s.head(ctx, repoDir, current.ID())
+	head, err := s.head(ctx, repoDir, live.ID())
 	if err != nil {
 		s.deps.Log.Error("read head failed",
-			slog.String("session", current.ID()),
+			slog.String("session", live.ID()),
 			slog.String("error", err.Error()))
-		return session.Session{}, &session.ReviewError{Code: session.CodeGitFailure, Message: MsgGitFailure()}
+		return *live, &session.ReviewError{Code: session.CodeGitFailure, Message: MsgGitFailure()}
 	}
-	outPath := filepath.Join(s.deps.Workspaces.SessionDir(current.ID()), CombinedDiffFile)
+	outPath := filepath.Join(s.deps.Workspaces.SessionDir(live.ID()), CombinedDiffFile)
 	if err := diff.WriteCombined(ctx, s.deps.Runner, repoDir, resolved.BaseSHA, head, outPath); err != nil {
 		s.deps.Log.Error("write combined diff failed",
-			slog.String("session", current.ID()),
+			slog.String("session", live.ID()),
 			slog.String("error", err.Error()))
-		return session.Session{}, &session.ReviewError{Code: session.CodeGitFailure, Message: MsgGitFailure()}
+		return *live, &session.ReviewError{Code: session.CodeGitFailure, Message: MsgGitFailure()}
 	}
 	files, totals, err := diff.Summarize(ctx, s.deps.Runner, repoDir, resolved.BaseSHA, head)
 	if err != nil {
 		s.deps.Log.Error("summarize diff failed",
-			slog.String("session", current.ID()),
+			slog.String("session", live.ID()),
 			slog.String("error", err.Error()))
-		return session.Session{}, &session.ReviewError{Code: session.CodeGitFailure, Message: MsgGitFailure()}
+		return *live, &session.ReviewError{Code: session.CodeGitFailure, Message: MsgGitFailure()}
 	}
-	ready, err := current.Ready(head, files, totals, s.deps.Now())
+	// READY is a transition out of CREATING computed from this build's own
+	// copy, so it must not be written if the session was discarded (or
+	// expired) meanwhile: its workspace is gone and Save would re-create the
+	// directory. Re-read the authoritative record first.
+	if _, ok := s.deps.Store.Get(live.ID()); !ok {
+		return *live, fmt.Errorf("session %s disappeared from the store during the build", live.ID())
+	}
+	ready, err := live.Ready(head, files, totals, s.deps.Now())
 	if err != nil {
-		return session.Session{}, fmt.Errorf("mark ready: %w", err)
+		return *live, fmt.Errorf("mark ready: %w", err)
+	}
+	// Re-read immediately before the write: see terminalWins.
+	if stored, dropped := s.terminalWins(live.ID(), string(session.StatusReady)); dropped {
+		return stored, nil
 	}
 	// READY must be durable before it is reported: a client told READY whose
 	// record never reached the store would poll a CREATING session forever.
 	if err := s.persist(ready); err != nil {
-		return session.Session{}, err
+		return *live, err
 	}
 	s.deps.Log.Info("review ready", slog.String("session", ready.ID()), slog.Int("files", totals.Files))
 	return ready, nil
