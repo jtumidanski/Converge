@@ -124,29 +124,42 @@ func (s *Store) List() []Session {
 	return out
 }
 
-// Finish cleans up and marks FINISHED. Unknown or already finished sessions are no-ops.
+// Finish marks FINISHED and cleans up. Unknown or already finished sessions
+// are no-ops. The terminal status is written to the index before Cleanup
+// runs (not after) so that a concurrent Get/List can never observe this
+// session as still active while its workspace is being deleted underneath
+// it. Cleanup is not run under the store's lock: it does filesystem and git
+// work and would otherwise serialise the whole store behind it. If Cleanup
+// fails, the FINISHED status is already durable in the index — the error is
+// still returned so the caller can log/handle the cleanup failure, but it no
+// longer leaves the session stuck non-terminal.
 func (s *Store) Finish(ctx context.Context, id string) error {
 	sess, ok := s.Get(id)
 	if !ok || sess.Status() == StatusFinished {
 		return nil
 	}
+	finished := sess.Finished(s.now())
+	s.mu.Lock()
+	s.index[id] = finished
+	s.mu.Unlock()
 	if err := s.cleaner.Cleanup(ctx, sess); err != nil {
 		return fmt.Errorf("session %s: cleanup: %w", id, err)
 	}
-	s.mu.Lock()
-	s.index[id] = sess.Finished(s.now())
-	s.mu.Unlock()
 	return nil
 }
 
-// expire cleans up and marks EXPIRED (in memory only; the directory is gone).
+// expire marks EXPIRED and cleans up (in memory only; the directory is
+// gone). As with Finish, the terminal status is written to the index before
+// Cleanup runs so a concurrent Get/List never observes an about-to-be-wiped
+// session as still active; Cleanup runs outside the lock so it doesn't
+// serialise the store.
 func (s *Store) expire(ctx context.Context, sess Session) {
-	if err := s.cleaner.Cleanup(ctx, sess); err != nil {
-		s.log.Warn("expire cleanup failed", slog.String("session", sess.ID()), slog.String("error", err.Error()))
-	}
 	s.mu.Lock()
 	s.index[sess.ID()] = sess.Expired(s.now())
 	s.mu.Unlock()
+	if err := s.cleaner.Cleanup(ctx, sess); err != nil {
+		s.log.Warn("expire cleanup failed", slog.String("session", sess.ID()), slog.String("error", err.Error()))
+	}
 }
 
 // LoadAll implements FR-8.6 startup recovery.
