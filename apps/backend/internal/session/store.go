@@ -32,14 +32,28 @@ type Store struct {
 	mu      sync.RWMutex
 	index   map[string]Session
 	corrupt map[string]error
+	// pendingCleanup tracks ids whose terminal status is durable (index and,
+	// on the failure path, disk) but whose Cleanup call failed, so their
+	// workspace directory may still exist. Sweep retries these on every pass
+	// until Cleanup succeeds or maxCleanupRetries is reached (see
+	// retryCleanup), at which point the id is dropped and no further
+	// automatic retry happens. The map only ever holds one entry per
+	// currently-failing id, so it cannot grow unbounded.
+	pendingCleanup map[string]int
 }
+
+// maxCleanupRetries bounds how many times Sweep will retry a failed Cleanup
+// for the same session before giving up on it. This guarantees a
+// permanently failing Cleanup cannot spin forever or grow pendingCleanup
+// without bound.
+const maxCleanupRetries = 5
 
 // NewStore creates a store; root must already exist.
 func NewStore(root string, ttl time.Duration, cleaner Cleaner, log *slog.Logger, now func() time.Time) *Store {
 	if now == nil {
 		now = time.Now
 	}
-	return &Store{root: root, ttl: ttl, cleaner: cleaner, log: log, now: now, index: map[string]Session{}, corrupt: map[string]error{}}
+	return &Store{root: root, ttl: ttl, cleaner: cleaner, log: log, now: now, index: map[string]Session{}, corrupt: map[string]error{}, pendingCleanup: map[string]int{}}
 }
 
 func (s *Store) Root() string         { return s.root }
@@ -132,7 +146,12 @@ func (s *Store) List() []Session {
 // work and would otherwise serialise the whole store behind it. If Cleanup
 // fails, the FINISHED status is already durable in the index — the error is
 // still returned so the caller can log/handle the cleanup failure, but it no
-// longer leaves the session stuck non-terminal.
+// longer leaves the session stuck non-terminal. On a Cleanup failure the
+// terminal record is also persisted to the surviving session.json (see
+// persistCleanupFailure) and the id is registered for retry on a later
+// Sweep, so a permanently-successful-on-retry Cleanup eventually still
+// removes the workspace, and a restart before that happens sees the true
+// FINISHED status rather than a stale active one.
 func (s *Store) Finish(ctx context.Context, id string) error {
 	sess, ok := s.Get(id)
 	if !ok || sess.Status() == StatusFinished {
@@ -143,23 +162,78 @@ func (s *Store) Finish(ctx context.Context, id string) error {
 	s.index[id] = finished
 	s.mu.Unlock()
 	if err := s.cleaner.Cleanup(ctx, sess); err != nil {
+		s.log.Warn("finish cleanup failed", slog.String("session", id), slog.String("error", err.Error()))
+		s.persistCleanupFailure(id, finished)
 		return fmt.Errorf("session %s: cleanup: %w", id, err)
 	}
 	return nil
 }
 
-// expire marks EXPIRED and cleans up (in memory only; the directory is
-// gone). As with Finish, the terminal status is written to the index before
-// Cleanup runs so a concurrent Get/List never observes an about-to-be-wiped
-// session as still active; Cleanup runs outside the lock so it doesn't
-// serialise the store.
+// expire marks EXPIRED and cleans up. The terminal status is written to the
+// index before Cleanup runs so a concurrent Get/List never observes an
+// about-to-be-wiped session as still active; Cleanup runs outside the lock
+// so it doesn't serialise the store. On success the session directory
+// (including session.json) is gone, so nothing further is persisted — the
+// terminal status lives only in memory, same as before. On failure the
+// directory survives holding a stale, non-terminal record; persistCleanupFailure
+// writes the true EXPIRED status to that surviving session.json and
+// registers the id for retry on a later Sweep.
 func (s *Store) expire(ctx context.Context, sess Session) {
+	expired := sess.Expired(s.now())
 	s.mu.Lock()
-	s.index[sess.ID()] = sess.Expired(s.now())
+	s.index[sess.ID()] = expired
 	s.mu.Unlock()
 	if err := s.cleaner.Cleanup(ctx, sess); err != nil {
 		s.log.Warn("expire cleanup failed", slog.String("session", sess.ID()), slog.String("error", err.Error()))
+		s.persistCleanupFailure(sess.ID(), expired)
 	}
+}
+
+// persistCleanupFailure writes the terminal record to the surviving
+// session.json (via the existing atomic Save path) and registers id for
+// retry on a later Sweep. It is only called after Cleanup has already
+// failed, i.e. only on the path where the session's directory is known to
+// still exist. If Save itself fails, that is logged too — the in-memory
+// terminal status (already written by the caller) is never lost or rolled
+// back either way.
+func (s *Store) persistCleanupFailure(id string, terminal Session) {
+	if err := s.Save(terminal); err != nil {
+		s.log.Warn("failed to persist terminal status after cleanup failure", slog.String("session", id), slog.String("error", err.Error()))
+	}
+	s.mu.Lock()
+	if _, ok := s.pendingCleanup[id]; !ok {
+		s.pendingCleanup[id] = 0
+	}
+	s.mu.Unlock()
+}
+
+// retryCleanup re-attempts Cleanup for a session whose prior Cleanup failed.
+// It never touches the session's status: the id was already terminal in the
+// index (and on disk) before this is ever called, so a retry — successful
+// or not — cannot make the session visible as active again. Retries are
+// bounded by maxCleanupRetries: once reached, the id is dropped from
+// pendingCleanup and no further automatic retry happens (the failure is
+// logged at Error level so it isn't silently lost).
+func (s *Store) retryCleanup(ctx context.Context, sess Session) {
+	id := sess.ID()
+	if err := s.cleaner.Cleanup(ctx, sess); err != nil {
+		s.mu.Lock()
+		s.pendingCleanup[id]++
+		attempts := s.pendingCleanup[id]
+		s.mu.Unlock()
+		if attempts >= maxCleanupRetries {
+			s.log.Error("giving up on session cleanup after repeated failures", slog.String("session", id), slog.Int("attempts", attempts), slog.String("error", err.Error()))
+			s.mu.Lock()
+			delete(s.pendingCleanup, id)
+			s.mu.Unlock()
+			return
+		}
+		s.log.Warn("retrying cleanup failed", slog.String("session", id), slog.Int("attempts", attempts), slog.String("error", err.Error()))
+		return
+	}
+	s.mu.Lock()
+	delete(s.pendingCleanup, id)
+	s.mu.Unlock()
 }
 
 // LoadAll implements FR-8.6 startup recovery.
@@ -234,6 +308,16 @@ func (s *Store) LoadAll(ctx context.Context) error {
 		}
 		s.mu.Lock()
 		s.index[id] = sess
+		if !sess.IsActive() {
+			// A terminal (FINISHED/EXPIRED) session whose directory still
+			// exists on disk can only mean a prior Cleanup failed before the
+			// process restarted (a successful Cleanup removes the directory
+			// entirely). Register it for retry so Sweep picks the cleanup
+			// back up instead of leaking the workspace forever.
+			if _, ok := s.pendingCleanup[id]; !ok {
+				s.pendingCleanup[id] = 0
+			}
+		}
 		s.mu.Unlock()
 	}
 	s.Sweep(ctx)

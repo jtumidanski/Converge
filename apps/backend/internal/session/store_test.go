@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -353,6 +354,181 @@ func TestGetVsCorrupted(t *testing.T) {
 	}
 	if _, ok := st.Get(corruptID); !ok {
 		t.Fatal("healed id should now be found")
+	}
+}
+
+// retryCleaner mirrors the real Cleaner's contract (Cleanup removes the
+// session's directory) so tests can observe the directory actually
+// disappearing once a retried Cleanup succeeds, unlike fakeCleaner which
+// never touches the filesystem. failIDs controls which ids currently fail;
+// flip an entry to false to simulate a transient failure clearing up.
+type retryCleaner struct {
+	mu      sync.Mutex
+	root    string
+	failIDs map[string]bool
+	cleaned []string
+}
+
+func (c *retryCleaner) Cleanup(_ context.Context, s Session) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cleaned = append(c.cleaned, s.ID())
+	if c.failIDs[s.ID()] {
+		return errors.New("boom")
+	}
+	return os.RemoveAll(filepath.Join(c.root, s.ID()))
+}
+
+func (c *retryCleaner) RemoveDir(_ context.Context, id string) error {
+	return os.RemoveAll(filepath.Join(c.root, id))
+}
+
+// TestFinishCleanupFailurePersistsTerminalStatus proves the failed-cleanup
+// gap identified in round 3: previously, a Cleanup failure left the terminal
+// status durable only in memory, so a restart before the workspace was ever
+// cleaned would reload the stale, non-terminal on-disk record (PRD FR-8.7
+// violation). Now the terminal record is written to the surviving
+// session.json via the existing atomic Save path.
+func TestFinishCleanupFailurePersistsTerminalStatus(t *testing.T) {
+	now := t0
+	st, fc := newStore(t, &now)
+	_ = st.Save(newSession(t))
+	fc.fail = errors.New("boom")
+
+	if err := st.Finish(context.Background(), "0123abcd"); err == nil {
+		t.Fatal("expected cleanup failure to surface")
+	}
+
+	raw, err := os.ReadFile(filepath.Join(st.Dir("0123abcd"), "session.json"))
+	if err != nil {
+		t.Fatalf("session.json missing after failed cleanup: %v", err)
+	}
+	var rec Record
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != StatusFinished {
+		t.Fatalf("on-disk status = %s, want FINISHED", rec.Status)
+	}
+}
+
+// TestExpireCleanupFailurePersistsTerminalStatus is the same proof as above,
+// via the expire/Sweep path instead of Finish.
+func TestExpireCleanupFailurePersistsTerminalStatus(t *testing.T) {
+	now := t0
+	st, fc := newStore(t, &now)
+	_ = st.Save(newSession(t))
+	fc.fail = errors.New("boom")
+
+	now = t0.Add(25 * time.Hour) // past the session's TTL
+	st.Sweep(context.Background())
+
+	raw, err := os.ReadFile(filepath.Join(st.Dir("0123abcd"), "session.json"))
+	if err != nil {
+		t.Fatalf("session.json missing after failed cleanup: %v", err)
+	}
+	var rec Record
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != StatusExpired {
+		t.Fatalf("on-disk status = %s, want EXPIRED", rec.Status)
+	}
+}
+
+// TestSweepRetriesFailedCleanupUntilSuccess proves the leak from finding A is
+// closed: a session whose Cleanup failed is retried on a later Sweep, and
+// once the underlying problem clears, the workspace is actually removed.
+// Throughout, the session must never become visible as active again.
+func TestSweepRetriesFailedCleanupUntilSuccess(t *testing.T) {
+	now := t0
+	root := t.TempDir()
+	rc := &retryCleaner{root: root, failIDs: map[string]bool{"0123abcd": true}}
+	st := NewStore(root, 24*time.Hour, rc, slog.New(slog.NewTextHandler(os.Stderr, nil)), func() time.Time { return now })
+	_ = st.Save(newSession(t))
+	ctx := context.Background()
+
+	if err := st.Finish(ctx, "0123abcd"); err == nil {
+		t.Fatal("expected first cleanup attempt to fail")
+	}
+	if got, ok := st.Get("0123abcd"); !ok || got.Status() != StatusFinished {
+		t.Fatalf("status not durable after failed cleanup: %+v ok=%v", got, ok)
+	}
+	if len(st.List()) != 0 {
+		t.Fatal("terminal session must never be visible as active")
+	}
+	if _, err := os.Stat(st.Dir("0123abcd")); err != nil {
+		t.Fatal("directory should still exist after a failed cleanup")
+	}
+
+	// The transient failure clears; the next Sweep should retry and succeed.
+	rc.mu.Lock()
+	rc.failIDs["0123abcd"] = false
+	rc.mu.Unlock()
+	st.Sweep(ctx)
+
+	if _, err := os.Stat(st.Dir("0123abcd")); !os.IsNotExist(err) {
+		t.Fatalf("directory should be gone after the retry succeeds, stat err=%v", err)
+	}
+	if got, ok := st.Get("0123abcd"); !ok || got.Status() != StatusFinished {
+		t.Fatalf("status changed across retry: %+v ok=%v", got, ok)
+	}
+	if len(st.List()) != 0 {
+		t.Fatal("terminal session must never be visible as active")
+	}
+	st.mu.RLock()
+	_, pending := st.pendingCleanup["0123abcd"]
+	st.mu.RUnlock()
+	if pending {
+		t.Fatal("id should be dropped from pendingCleanup once the retry succeeds")
+	}
+}
+
+// TestSweepRetryCleanupIsBounded proves a permanently failing Cleanup cannot
+// make Sweep spin forever or make pendingCleanup grow without bound: after
+// maxCleanupRetries is reached, the id is dropped and further Sweep calls
+// stop touching it, while its terminal status remains durable and it never
+// becomes visible as active.
+func TestSweepRetryCleanupIsBounded(t *testing.T) {
+	now := t0
+	root := t.TempDir()
+	rc := &retryCleaner{root: root, failIDs: map[string]bool{"0123abcd": true}} // never clears
+	st := NewStore(root, 24*time.Hour, rc, slog.New(slog.NewTextHandler(os.Stderr, nil)), func() time.Time { return now })
+	_ = st.Save(newSession(t))
+	ctx := context.Background()
+
+	if err := st.Finish(ctx, "0123abcd"); err == nil {
+		t.Fatal("expected cleanup to fail")
+	}
+
+	for i := 0; i < 20; i++ {
+		st.Sweep(ctx)
+	}
+
+	rc.mu.Lock()
+	calls := len(rc.cleaned)
+	rc.mu.Unlock()
+	wantCalls := 1 + maxCleanupRetries // the initial attempt plus bounded retries
+	if calls != wantCalls {
+		t.Fatalf("cleanup called %d times across 20 sweeps, want exactly %d (bounded retries)", calls, wantCalls)
+	}
+
+	st.mu.RLock()
+	_, stillPending := st.pendingCleanup["0123abcd"]
+	pendingSize := len(st.pendingCleanup)
+	st.mu.RUnlock()
+	if stillPending {
+		t.Fatal("id should have been dropped from pendingCleanup once retries were exhausted")
+	}
+	if pendingSize != 0 {
+		t.Fatalf("pendingCleanup must not accumulate state, got %d entries", pendingSize)
+	}
+
+	if got, ok := st.Get("0123abcd"); !ok || got.Status() != StatusFinished {
+		t.Fatalf("terminal status must remain durable even after giving up: %+v ok=%v", got, ok)
+	}
+	if len(st.List()) != 0 {
+		t.Fatal("terminal session must never be visible as active, even after giving up on retries")
 	}
 }
 
