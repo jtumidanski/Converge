@@ -1,0 +1,4 @@
+[
+  { "id": 42, "name": "server", "path": "server", "path_with_namespace": "atlas/server", "namespace": { "full_path": "atlas" }, "default_branch": "main", "web_url": "https://gitlab.company.com/atlas/server", "http_url_to_repo": "https://gitlab.company.com/atlas/server.git" },
+  { "id": 43, "name": "web", "path": "web", "path_with_namespace": "atlas/apps/web", "namespace": { "full_path": "atlas/apps" }, "default_branch": "develop", "web_url": "https://gitlab.company.com/atlas/apps/web", "http_url_to_repo": "https://gitlab.company.com/atlas/apps/web.git" }
+]
