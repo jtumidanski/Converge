@@ -48,14 +48,21 @@ func (o *objects) Exists(ctx context.Context, sha string) (bool, error) {
 	if err := gitx.ValidateSHA(sha); err != nil {
 		return false, err
 	}
-	_, err := o.run(ctx, nil, "cat-file", "-e", sha+"^{commit}")
+	// rev-parse --verify --quiet cleanly separates "object not present" (exit
+	// 1, silent) from fatal conditions (exit 128: corrupted mirror, missing
+	// git dir, unreadable object database, etc). cat-file -e was tried first
+	// but rejected: empirically it reports both "object absent" and "fatal,
+	// broken repository" as the same exit code 128, so exit code alone can't
+	// distinguish them for that command. Matches the plumbing RevParse already
+	// uses below.
+	_, err := o.run(ctx, nil, "rev-parse", "--verify", "--quiet", sha+"^{commit}")
 	if err == nil {
 		return true, nil
 	}
-	if gitx.IsExit(err, 1) || gitx.IsExit(err, 128) {
+	if gitx.IsExit(err, 1) {
 		return false, nil
 	}
-	return false, err
+	return false, fmt.Errorf("exists %s: %w", sha[:7], err)
 }
 
 func (o *objects) Parents(ctx context.Context, sha string) ([]string, error) {

@@ -42,7 +42,13 @@ func (c *Cache) Path(providerID, fullName string) (string, error) {
 	return filepath.Join(parts...), nil
 }
 
-// Lock takes the per-mirror mutex.
+// Lock takes the per-mirror mutex. The returned func releases it.
+//
+// The lock is a plain, non-reentrant sync.Mutex (via gitx.LockMap). A caller
+// that already holds this lock for mirrorPath — e.g. from inside a Cache
+// operation such as Ensure or FetchSHA, which take it internally — must not
+// call Lock again for the same mirrorPath on the same goroutine before
+// releasing it; doing so self-deadlocks.
 func (c *Cache) Lock(mirrorPath string) func() { return c.locks.Lock(mirrorPath) }
 
 func exists(path string) bool {
