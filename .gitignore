@@ -1,0 +1,42 @@
+# Go
+apps/backend/bin/
+apps/backend/dist/
+apps/backend/converge
+*.test
+*.out
+coverage.txt
+
+# Node / Vite
+apps/frontend/node_modules/
+apps/frontend/dist/
+apps/frontend/dist-ssr/
+apps/frontend/.vite/
+
+# Editors
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Task worktrees (created by /spec-task)
+.worktrees/
+
+# Claude Code local overrides
+.claude/settings.local.json
+
+# Local secrets and data
+*.env
+*.env.local
+.envrc
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Test artifacts
+apps/frontend/playwright-report/
+apps/frontend/test-results/
