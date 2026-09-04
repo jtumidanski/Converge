@@ -19,6 +19,16 @@ import (
 	"github.com/jtumidanski/converge/internal/testutil"
 )
 
+func newExecRunnerForTest(t *testing.T) *gitx.ExecRunner {
+	t.Helper()
+	runner, err := gitx.NewExecRunner(testLog(), gitx.Options{CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runner.Close() })
+	return runner
+}
+
 func testLog() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 }
@@ -237,5 +247,270 @@ func TestFetchChangesBoundedConcurrencyAndOrder(t *testing.T) {
 	}
 	if max > resolveConcurrency {
 		t.Fatalf("max concurrent calls = %d, want <= resolveConcurrency (%d)", max, resolveConcurrency)
+	}
+}
+
+// TestResolveRejectsNotMergedBeforeFetchingMirror pins Finding 1's
+// reject-fast property: NOT_MERGED must be returned using only provider data,
+// before the mirror is ever fetched. The repository's clone URL points
+// nowhere, so if Resolve reached the mirror-fetch step at all it would fail
+// with a different error (repository unavailable / git failure), not
+// NOT_MERGED; the mirror directory is also asserted absent afterward as a
+// second, independent signal.
+func TestResolveRejectsNotMergedBeforeFetchingMirror(t *testing.T) {
+	runner := newExecRunnerForTest(t)
+	root := t.TempDir()
+	cache := mirror.New(root, runner, &gitx.LockMap{}, testLog())
+
+	repo, err := provider.NewRepositoryBuilder().SetProviderID("fake").SetFullName("atlas/unreachable").SetDefaultBranch("main").
+		SetCloneURL("file:///definitely/does/not/exist.git").Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := fake.New("fake", provider.KindGitLab)
+	p.AddRepository(repo)
+	open, err := provider.NewChangeRequestBuilder().SetProviderID("fake").SetRepository(repo).SetNumber(1).SetTitle("open").
+		SetTargetBranch("main").SetState(provider.StateOpen).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.AddChange(open)
+
+	r := NewResolver(cache, testLog())
+	var re *session.ReviewError
+	_, err = r.Resolve(context.Background(), p, repo, "main", []int{1}, nil)
+	if !errors.As(err, &re) || re.Code != session.CodeNotMerged {
+		t.Fatalf("err = %v, want NOT_MERGED", err)
+	}
+
+	mirrorPath, err := cache.Path(p.ID(), repo.FullName())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(mirrorPath); !os.IsNotExist(statErr) {
+		t.Fatalf("mirror directory exists at %s; the mirror was fetched despite the reject-fast NOT_MERGED path", mirrorPath)
+	}
+}
+
+// TestClassifyRevParseErr pins Finding 2: a clean exit-1 from the final
+// base-SHA RevParse (root commit, no first parent) is BASE_UNDETERMINED;
+// anything else (a corrupted mirror, a cancelled context, or any other
+// infrastructure failure) is GIT_FAILURE instead of being mislabelled as a
+// root commit.
+func TestClassifyRevParseErr(t *testing.T) {
+	first := strings.Repeat("a", 40)
+
+	exit1 := &gitx.ExitError{Category: gitx.CategoryQuery, Result: gitx.Result{ExitCode: 1}}
+	wrapped1 := fmt.Errorf("rev-parse %s^1: %w", first, exit1)
+	re1 := classifyRevParseErr(wrapped1, first, 7)
+	if re1.Code != session.CodeBaseUndetermined || re1.Change != 7 {
+		t.Fatalf("exit-1: code = %s, change = %d", re1.Code, re1.Change)
+	}
+	if !strings.Contains(re1.Message, "no first parent") {
+		t.Fatalf("exit-1: message = %q, want mention of first parent", re1.Message)
+	}
+
+	exit128 := &gitx.ExitError{Category: gitx.CategoryQuery, Result: gitx.Result{ExitCode: 128}}
+	wrapped128 := fmt.Errorf("rev-parse %s^1: %w", first, exit128)
+	re2 := classifyRevParseErr(wrapped128, first, 7)
+	if re2.Code != session.CodeGitFailure || re2.Change != 7 {
+		t.Fatalf("exit-128: code = %s, change = %d", re2.Code, re2.Change)
+	}
+	if strings.Contains(re2.Message, "no first parent") {
+		t.Fatalf("exit-128: message = %q, must not claim the commit has no first parent", re2.Message)
+	}
+}
+
+// TestResolveBaseIsRootCommit drives Finding 2's root-commit branch
+// end-to-end through Resolve. The single change is landed via the rebase
+// (multi-commit, single-parent) path with n set so the walked history
+// reaches all the way back to the repository's actual root commit (0
+// parents); that root commit becomes the earliest landing SHA, so the final
+// RevParse(first^1) genuinely fails with exit 1 and must surface as
+// BASE_UNDETERMINED.
+func TestResolveBaseIsRootCommit(t *testing.T) {
+	src := testutil.NewRepo(t)
+	root := src.Head() // the repository's true root commit: 0 parents
+
+	src.Branch("feat/x")
+	c1 := src.Commit("x1.txt", "1\n", "x1")
+	c2 := src.Commit("x2.txt", "2\n", "x2")
+	src.Checkout("main")
+	src.Git("merge", "--ff-only", "feat/x")
+	src.Push()
+
+	runner := newExecRunnerForTest(t)
+	cache := mirror.New(t.TempDir(), runner, &gitx.LockMap{}, testLog())
+
+	repo, err := provider.NewRepositoryBuilder().SetProviderID("fake").SetFullName("atlas/root").SetDefaultBranch("main").SetCloneURL(src.CloneURL()).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := fake.New("fake", provider.KindGitLab)
+	p.AddRepository(repo)
+
+	rootCommit, _ := provider.NewCommit(root, "initial", time.Now())
+	c1Commit, _ := provider.NewCommit(c1, "x1", time.Now())
+	c2Commit, _ := provider.NewCommit(c2, "x2", time.Now())
+	cr, err := provider.NewChangeRequestBuilder().SetProviderID("fake").SetRepository(repo).SetNumber(1).SetTitle("root").
+		SetAuthor("dev").SetTargetBranch("main").SetState(provider.StateMerged).SetMergedAt(time.Now()).
+		SetHeadSHA(c2).SetCommits([]provider.Commit{rootCommit, c1Commit, c2Commit}).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.AddChange(cr)
+
+	resolver := NewResolver(cache, testLog())
+	var re *session.ReviewError
+	_, err = resolver.Resolve(context.Background(), p, repo, "main", []int{1}, nil)
+	if !errors.As(err, &re) || re.Code != session.CodeBaseUndetermined {
+		t.Fatalf("err = %v, want BASE_UNDETERMINED", err)
+	}
+	if !strings.Contains(re.Message, "no first parent") {
+		t.Fatalf("message = %q, want mention of first parent", re.Message)
+	}
+}
+
+// cancelProvider errors immediately for a chosen change number and blocks
+// every other GetChange on ctx.Done() (with a long fallback timer), so a
+// test can prove fetchChanges cancels siblings on the first error instead of
+// letting them run to completion.
+type cancelProvider struct {
+	*fake.Provider
+	errAt          int
+	cancelledCount int32
+	completedCount int32
+}
+
+func (c *cancelProvider) GetChange(ctx context.Context, repo provider.Repository, number int) (provider.ChangeRequest, error) {
+	if number == c.errAt {
+		return provider.ChangeRequest{}, provider.ErrNotFound
+	}
+	select {
+	case <-ctx.Done():
+		atomic.AddInt32(&c.cancelledCount, 1)
+		return provider.ChangeRequest{}, ctx.Err()
+	case <-time.After(2 * time.Second):
+		atomic.AddInt32(&c.completedCount, 1)
+		return c.Provider.GetChange(ctx, repo, number)
+	}
+}
+
+// TestFetchChangesCancelsSiblingsOnFirstError pins Finding 4: once one
+// goroutine reports an error, the others must observe cancellation (via the
+// ctx handed to the provider) rather than sleeping out their full duration.
+// numbers is sized to exactly resolveConcurrency so all goroutines start
+// in the same wave with no semaphore queueing to complicate the timing.
+func TestFetchChangesCancelsSiblingsOnFirstError(t *testing.T) {
+	repo, err := provider.NewRepositoryBuilder().SetProviderID("fake").SetFullName("atlas/server").SetDefaultBranch("main").SetCloneURL("file:///dev/null").Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := fake.New("fake", provider.KindGitLab)
+	base.AddRepository(repo)
+	cp := &cancelProvider{Provider: base, errAt: 1}
+	cache := mirror.New(t.TempDir(), nil, &gitx.LockMap{}, testLog())
+	r := NewResolver(cache, testLog())
+
+	numbers := []int{1, 2, 3, 4}
+	start := time.Now()
+	_, err = r.fetchChanges(context.Background(), cp, repo, numbers)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("fetchChanges took %s, want fail-fast (<500ms); siblings were not cancelled promptly", elapsed)
+	}
+	if atomic.LoadInt32(&cp.cancelledCount) == 0 {
+		t.Fatal("no sibling goroutine observed cancellation")
+	}
+	if got := atomic.LoadInt32(&cp.completedCount); got != 0 {
+		t.Fatalf("%d sibling(s) ran to completion instead of being cancelled", got)
+	}
+}
+
+// TestLandingWithFetchRetriesAndSucceeds drives FR-5.8's fetch-retry path
+// (Finding 5) genuinely: the candidate commit is pushed to origin on a
+// throwaway branch and that branch's ref is then deleted, so the object is
+// absent from any ref origin exposes and is not picked up by the mirror's
+// normal clone/update. The first ResolveLanding attempt inside
+// landingWithFetch must therefore miss it (ErrNoCandidate), triggering a
+// direct `git fetch origin <sha>` that recovers the dangling object, after
+// which the retried ResolveLanding succeeds.
+func TestLandingWithFetchRetriesAndSucceeds(t *testing.T) {
+	src := testutil.NewRepo(t)
+	src.Branch("feat/dangling")
+	cand := src.Commit("d.txt", "d\n", "d1")
+	src.Checkout("main")
+	src.Push()                                             // cand reachable on origin via feat/dangling
+	src.Git("push", "origin", "--delete", "feat/dangling") // drop the ref; the object itself stays, now dangling
+
+	runner := newExecRunnerForTest(t)
+	cache := mirror.New(t.TempDir(), runner, &gitx.LockMap{}, testLog())
+
+	repo, err := provider.NewRepositoryBuilder().SetProviderID("fake").SetFullName("atlas/dangling").SetDefaultBranch("main").SetCloneURL(src.CloneURL()).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := fake.New("fake", provider.KindGitLab)
+	p.AddRepository(repo)
+
+	commit, _ := provider.NewCommit(cand, "d1", time.Now())
+	cr, err := provider.NewChangeRequestBuilder().SetProviderID("fake").SetRepository(repo).SetNumber(1).SetTitle("dangling").
+		SetTargetBranch("main").SetState(provider.StateMerged).SetMergedAt(time.Now()).SetHeadSHA(cand).SetCommits([]provider.Commit{commit}).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.AddChange(cr)
+
+	r := NewResolver(cache, testLog())
+	mirrorPath, err := r.mirrors.Ensure(context.Background(), p, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects := r.mirrors.Objects(mirrorPath, repo.FullName())
+
+	// Precondition: the candidate is genuinely absent before the retry, or
+	// this test would not be exercising the fetch-retry path at all.
+	if ok, existErr := objects.Exists(context.Background(), cand); existErr != nil || ok {
+		t.Fatalf("precondition: candidate already present in the mirror (ok=%v err=%v)", ok, existErr)
+	}
+
+	landing, err := r.landingWithFetch(context.Background(), p, repo, objects, cr, []provider.Commit{commit})
+	if err != nil {
+		t.Fatalf("landingWithFetch: %v", err)
+	}
+	if landing.Strategy != session.StrategySquash || len(landing.SHAs) != 1 || landing.SHAs[0] != cand {
+		t.Fatalf("landing = %+v", landing)
+	}
+}
+
+// TestLandingWithFetchAbsorbsFetchFailure pins FR-5.8's documented behavior
+// (Finding 5): when the one-shot fetch-by-SHA retry itself fails (the SHA
+// doesn't exist anywhere the provider can reach), that failure is absorbed
+// into the same generic MISSING_COMMITS outcome ResolveLanding already
+// returns for "no candidate present" — it is not surfaced as a distinct git
+// or provider error. This is a documented decision, not an accident: pinned
+// here so a future change to that behavior is deliberate.
+func TestLandingWithFetchAbsorbsFetchFailure(t *testing.T) {
+	f := newResolveFixture(t)
+	fakeSHA := strings.Repeat("f", 40)
+	cr, err := provider.NewChangeRequestBuilder().SetProviderID("fake").SetRepository(f.repo).SetNumber(99).SetTitle("ghost").
+		SetTargetBranch("main").SetState(provider.StateMerged).SetMergedAt(time.Now()).SetHeadSHA(fakeSHA).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mirrorPath, err := f.resolver.mirrors.Ensure(context.Background(), f.prov, f.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects := f.resolver.mirrors.Objects(mirrorPath, f.repo.FullName())
+
+	_, err = f.resolver.landingWithFetch(context.Background(), f.prov, f.repo, objects, cr, nil)
+	var re *session.ReviewError
+	if !errors.As(err, &re) || re.Code != session.CodeMissingCommits {
+		t.Fatalf("err = %v, want MISSING_COMMITS (FetchSHA's failure absorbed into the standard no-candidate outcome)", err)
 	}
 }

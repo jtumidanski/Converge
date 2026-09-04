@@ -8,6 +8,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/jtumidanski/converge/internal/gitx"
 	"github.com/jtumidanski/converge/internal/mirror"
 	"github.com/jtumidanski/converge/internal/provider"
 	"github.com/jtumidanski/converge/internal/session"
@@ -76,15 +77,28 @@ func (r *Resolver) Resolve(ctx context.Context, p provider.GitProvider, repo pro
 		return Resolved{}, err
 	}
 
-	// Step 2 (part of): make sure the mirror is up to date and the requested
+	// Step 2a: reject anything not merged before doing any git work. This
+	// check only needs data the provider already returned, so it must run
+	// before the mirror is fetched (which can cost a full clone, up to
+	// GIT_CLONE_TIMEOUT_MINUTES): a request naming an unmerged PR/MR should
+	// be rejected fast, not after paying for a mirror update it was always
+	// going to fail. (Split from the target-mismatch check below, which
+	// cannot run this early — see the comment there.)
+	if err := checkMerged(changes); err != nil {
+		return Resolved{}, err
+	}
+
+	// Step 2b (part of): make sure the mirror is up to date and the requested
 	// base branch actually exists before judging anything about it. This
-	// runs before the merge/target check below: a caller-requested base
+	// runs before the target-mismatch check below: a caller-requested base
 	// branch that doesn't exist in the repository at all is an undetermined
 	// base, not an "incompatible target" report about the selected changes
 	// (deviation from the brief's illustrative ordering — its own test,
 	// TestResolveRejectsUnmergedAndBadTargets's "missing branch" case,
 	// requires CodeBaseUndetermined here, which only reaching BranchExists
-	// first can produce).
+	// first can produce). Unlike the NOT_MERGED check above, the target
+	// check cannot be pushed earlier than this: it needs to lose to
+	// BASE_UNDETERMINED specifically when the base branch itself is absent.
 	report(session.StageUpdatingRepo)
 	mirrorPath, err := r.mirrors.Ensure(ctx, p, repo)
 	if err != nil {
@@ -102,8 +116,8 @@ func (r *Resolver) Resolve(ctx context.Context, p provider.GitProvider, repo pro
 		return Resolved{}, &session.ReviewError{Code: session.CodeBaseUndetermined, Message: MsgBaseUndetermined(fmt.Sprintf("branch %s is not present in the repository", baseBranch))}
 	}
 
-	// Step 2: reject anything not merged, or merged to a different target.
-	if err := checkMergedAndTargets(changes, baseBranch); err != nil {
+	// Step 2c: reject changes merged to a different target.
+	if err := checkTargets(changes, baseBranch); err != nil {
 		return Resolved{}, err
 	}
 
@@ -165,9 +179,25 @@ func (r *Resolver) Resolve(ctx context.Context, p provider.GitProvider, repo pro
 	first := resolved[0].LandingSHAs()[0]
 	baseSHA, err := objects.RevParse(ctx, first+"^1")
 	if err != nil {
-		return Resolved{}, &session.ReviewError{Code: session.CodeBaseUndetermined, Message: MsgBaseUndetermined(fmt.Sprintf("commit %s has no first parent", first[:7])), Change: resolved[0].Number()}
+		return Resolved{}, classifyRevParseErr(err, first, resolved[0].Number())
 	}
 	return Resolved{Changes: resolved, BaseSHA: baseSHA, MirrorPath: mirrorPath}, nil
+}
+
+// classifyRevParseErr maps a failure from the final base-SHA-parent lookup to
+// a ReviewError. A clean exit-1 (rev-parse's way of saying "no such
+// revision" — here, the commit has no first parent, e.g. a root commit) is a
+// genuine BASE_UNDETERMINED. Anything else (a corrupted mirror, a cancelled
+// context, or any other infrastructure failure) is not: mislabelling it "no
+// first parent" would tell the user something false about their repository,
+// so it propagates as the git failure it is. Mirrors the same exit-1
+// discipline BranchExists and IsAncestor already apply in
+// internal/mirror/objects.go.
+func classifyRevParseErr(err error, first string, changeNumber int) *session.ReviewError {
+	if gitx.IsExit(err, 1) {
+		return &session.ReviewError{Code: session.CodeBaseUndetermined, Message: MsgBaseUndetermined(fmt.Sprintf("commit %s has no first parent", first[:7])), Change: changeNumber}
+	}
+	return &session.ReviewError{Code: session.CodeGitFailure, Message: MsgGitFailure(), Change: changeNumber}
 }
 
 // landingWithFetch resolves the landing commits, retrying once after fetching missing SHAs (FR-5.8).
@@ -197,10 +227,19 @@ func shortSHA(sha string) string {
 // are written to a slice pre-sized to len(numbers) and indexed by the
 // goroutine's own position, so output order is deterministic regardless of
 // completion order and no shared mutable state needs a lock.
+//
+// On the first error, the shared context is cancelled so sibling goroutines
+// still waiting on a semaphore slot or an in-flight provider call stop
+// promptly instead of continuing to make provider calls a request that is
+// already doomed. The caller's ctx is still honoured: if it was already
+// cancelled/expired, that is reported rather than swallowed as fallout from
+// this internal fail-fast cancellation.
 func (r *Resolver) fetchChanges(ctx context.Context, p provider.GitProvider, repo provider.Repository, numbers []int) ([]provider.ChangeRequest, error) {
 	out := make([]provider.ChangeRequest, len(numbers))
 	errs := make([]error, len(numbers))
 	sem := make(chan struct{}, resolveConcurrency)
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var wg sync.WaitGroup
 	for i, n := range numbers {
 		wg.Add(1)
@@ -208,33 +247,59 @@ func (r *Resolver) fetchChanges(ctx context.Context, p provider.GitProvider, rep
 			defer wg.Done()
 			select {
 			case sem <- struct{}{}:
-			case <-ctx.Done():
-				errs[i] = ctx.Err()
+			case <-cctx.Done():
+				errs[i] = cctx.Err()
 				return
 			}
 			defer func() { <-sem }()
-			cr, err := p.GetChange(ctx, repo, n)
+			cr, err := p.GetChange(cctx, repo, n)
 			out[i], errs[i] = cr, err
+			if err != nil {
+				cancel() // fail fast: stop siblings still in flight
+			}
 		}(i, n)
 	}
 	wg.Wait()
+
+	i, err := firstRealError(errs, ctx)
+	if err == nil {
+		return out, nil
+	}
+	if errors.Is(err, provider.ErrNotFound) {
+		return nil, &session.ReviewError{Code: session.CodeRepositoryUnavailable, Message: MsgRepositoryUnavailable(repo.FullName()), Change: numbers[i]}
+	}
+	if re := MapProviderError(p.ID(), repo.FullName(), err); re != nil {
+		re.Change = numbers[i]
+		return nil, re
+	}
+	return nil, &session.ReviewError{Code: session.CodeProviderUnavailable, Message: MsgProviderUnavailable(p.ID()), Change: numbers[i]}
+}
+
+// firstRealError picks the first error in errs that isn't just fallout from
+// fetchChanges' own fail-fast cancellation. A goroutine cancelled because a
+// sibling failed reports context.Canceled even though nothing is actually
+// wrong with the caller's request; surfacing that instead of the sibling's
+// real error would be misleading. If the caller's own ctx was the one that
+// was cancelled/expired, though, every context.Canceled/DeadlineExceeded is
+// genuine and the first one found is returned as-is.
+func firstRealError(errs []error, ctx context.Context) (int, error) {
+	callerDone := ctx.Err() != nil
 	for i, err := range errs {
 		if err == nil {
 			continue
 		}
-		if errors.Is(err, provider.ErrNotFound) {
-			return nil, &session.ReviewError{Code: session.CodeRepositoryUnavailable, Message: fmt.Sprintf("#%d was not found in %s.", numbers[i], repo.FullName()), Change: numbers[i]}
+		if !callerDone && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			continue
 		}
-		if re := MapProviderError(p.ID(), repo.FullName(), err); re != nil {
-			re.Change = numbers[i]
-			return nil, re
-		}
-		return nil, &session.ReviewError{Code: session.CodeProviderUnavailable, Message: MsgProviderUnavailable(p.ID()), Change: numbers[i]}
+		return i, err
 	}
-	return out, nil
+	return -1, nil
 }
 
-func checkMergedAndTargets(changes []provider.ChangeRequest, baseBranch string) error {
+// checkMerged rejects any selected change that isn't merged. Uses only data
+// already returned by the provider, so it is deliberately cheap enough to
+// run before any mirror work.
+func checkMerged(changes []provider.ChangeRequest) error {
 	var unmerged []int
 	for _, cr := range changes {
 		if cr.State() != provider.StateMerged {
@@ -244,6 +309,11 @@ func checkMergedAndTargets(changes []provider.ChangeRequest, baseBranch string) 
 	if len(unmerged) > 0 {
 		return &session.ReviewError{Code: session.CodeNotMerged, Message: MsgNotMerged(unmerged), Change: unmerged[0]}
 	}
+	return nil
+}
+
+// checkTargets rejects changes merged to a target branch other than baseBranch.
+func checkTargets(changes []provider.ChangeRequest, baseBranch string) error {
 	var mismatches []TargetMismatch
 	for _, cr := range changes {
 		if cr.TargetBranch() != baseBranch {
