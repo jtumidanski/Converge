@@ -3,7 +3,6 @@ package review
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -29,23 +28,30 @@ type ApplyResult struct {
 }
 
 // ChangeApplicator applies one resolved change to a workspace.
+//
+// providerID identifies the hosting provider the change came from. It is not
+// carried on session.ResolvedChange because a session is scoped to exactly one
+// provider (session.Session.ProviderID()), so it is constant for every change
+// in a session; it is passed in here only because FR-6.5 requires it in the
+// commit trailer.
 type ChangeApplicator interface {
-	Apply(ctx context.Context, repoDir string, rc session.ResolvedChange) (ApplyResult, error)
+	Apply(ctx context.Context, repoDir string, providerID string, rc session.ResolvedChange) (ApplyResult, error)
 }
 
 // CherryPickApplicator implements ChangeApplicator with git cherry-pick.
 //
-// The three landing strategies map to distinct cherry-pick invocations:
-//   - merge:  cherry-pick -m 1 --empty=keep <sha>       (replay the merge's
-//     diff against parent 1, i.e. the mainline)
-//   - squash: cherry-pick --empty=keep <sha>             (single squash commit)
-//   - rebase: cherry-pick --empty=keep <sha1> ... <shaN> (the full ordered
-//     chain of rebased commits, replayed one by one)
+// Landing commits are picked one at a time, in original order (FR-6.4), with
+// the strategy deciding the flags of each invocation:
+//   - merge:  cherry-pick -m 1 --empty=keep <sha>  (replay the merge's diff
+//     against parent 1, i.e. the mainline)
+//   - squash: cherry-pick --empty=keep <sha>       (single squash commit)
+//   - rebase: cherry-pick --empty=keep <sha_i>     (repeated per landing sha)
 //
-// On success, only the tip commit (the last one cherry-picked) has its
-// message rewritten with the Converge trailer (FR-6.5); intermediate commits
-// in a rebase pick are left as-is, since the trailer only needs to map the
-// group back to its PR/MR once.
+// Picking sequentially rather than handing git the whole list at once lets the
+// applicator amend *every* synthetic commit with the Converge trailer
+// (FR-6.5) — amending a non-tip commit after a batch pick would require
+// rewriting history — and makes the SHA reported on conflict exact rather than
+// inferred from CHERRY_PICK_HEAD.
 type CherryPickApplicator struct {
 	runner gitx.Runner
 	log    *slog.Logger
@@ -53,11 +59,21 @@ type CherryPickApplicator struct {
 
 // NewCherryPickApplicator builds the MVP applicator.
 func NewCherryPickApplicator(r gitx.Runner, log *slog.Logger) *CherryPickApplicator {
+	if log == nil {
+		// Never reach for the package-global logger; a caller that supplies
+		// no logger gets silence, not someone else's handler.
+		log = slog.New(slog.DiscardHandler)
+	}
 	return &CherryPickApplicator{runner: r, log: log}
 }
 
 // Apply cherry-picks the change's landing commits in order.
-func (a *CherryPickApplicator) Apply(ctx context.Context, repoDir string, rc session.ResolvedChange) (ApplyResult, error) {
+//
+// The change-level outcome is OutcomeEmpty only when every landing commit was
+// empty; if any commit contributed content the outcome is OutcomeApplied. On a
+// conflict the sha being applied at that moment is reported and the remaining
+// shas are not attempted.
+func (a *CherryPickApplicator) Apply(ctx context.Context, repoDir string, providerID string, rc session.ResolvedChange) (ApplyResult, error) {
 	shas := rc.LandingSHAs()
 	if len(shas) == 0 {
 		return ApplyResult{}, fmt.Errorf("apply #%d: no landing shas", rc.Number())
@@ -68,62 +84,80 @@ func (a *CherryPickApplicator) Apply(ctx context.Context, repoDir string, rc ses
 		}
 	}
 
+	applied := false
+	for _, sha := range shas {
+		res, err := a.pick(ctx, repoDir, providerID, rc, sha)
+		if err != nil {
+			return ApplyResult{}, err
+		}
+		if res.Outcome == OutcomeConflict {
+			return res, nil
+		}
+		if res.Outcome == OutcomeApplied {
+			applied = true
+		}
+	}
+	if !applied {
+		a.log.DebugContext(ctx, "cherry-pick produced no content", "change", rc.Number(), "shas", len(shas))
+		return ApplyResult{Outcome: OutcomeEmpty}, nil
+	}
+	return ApplyResult{Outcome: OutcomeApplied}, nil
+}
+
+// pick cherry-picks a single landing sha and annotates the resulting commit.
+// It returns OutcomeApplied, OutcomeEmpty (the commit was created but changed
+// nothing) or OutcomeConflict for this one sha.
+func (a *CherryPickApplicator) pick(ctx context.Context, repoDir, providerID string, rc session.ResolvedChange, sha string) (ApplyResult, error) {
 	args := []string{"cherry-pick", "--empty=keep"}
 	if rc.Strategy() == session.StrategyMerge {
 		args = append(args, "-m", "1")
 	}
-	args = append(args, shas...)
+	args = append(args, sha)
 
 	before, err := a.head(ctx, repoDir)
 	if err != nil {
 		return ApplyResult{}, fmt.Errorf("apply #%d: %w", rc.Number(), err)
 	}
 
-	_, runErr := a.runner.Run(ctx, gitx.Spec{Dir: repoDir, Args: args, Category: gitx.CategoryCherryPick})
-	if runErr != nil {
-		var exitErr *gitx.ExitError
-		if !errors.As(runErr, &exitErr) {
-			// The process failed to start, timed out, or some other
-			// non-exit condition occurred. This is never a conflict or an
-			// empty pick: classify it as a genuine error rather than
-			// guessing at the outcome.
-			return ApplyResult{}, fmt.Errorf("apply #%d: %w", rc.Number(), runErr)
+	if _, runErr := a.runner.Run(ctx, gitx.Spec{Dir: repoDir, Args: args, Category: gitx.CategoryCherryPick}); runErr != nil {
+		// Only exit 1 means "the pick stopped on a conflict". Any other
+		// non-zero exit (notably 128: bad revision, unmerged files left over
+		// from a previous pick, other precondition failures) is a hard
+		// failure, and a non-exit error means git never ran at all. Reporting
+		// either as a conflict would attribute stale unmerged paths and a
+		// stale CHERRY_PICK_HEAD to this change.
+		if !gitx.IsExit(runErr, 1) {
+			return ApplyResult{}, fmt.Errorf("apply #%d: cherry-pick %s: %w", rc.Number(), sha, runErr)
 		}
-
 		paths, listErr := a.conflictingPaths(ctx, repoDir)
 		if listErr != nil {
 			return ApplyResult{}, fmt.Errorf("apply #%d: list conflicting paths: %w", rc.Number(), listErr)
 		}
 		if len(paths) == 0 {
-			// git exited non-zero but left no unmerged paths behind: this is
-			// not the conflict shape we know how to handle (e.g. a bad
-			// revision, a dirty worktree precondition failure). Do not
-			// guess; surface it as an error.
+			// Exit 1 without unmerged paths is not the conflict shape we know
+			// how to handle. Do not guess; surface it as an error.
 			return ApplyResult{}, fmt.Errorf("apply #%d: cherry-pick failed without conflicting paths: %w", rc.Number(), runErr)
 		}
-		return ApplyResult{
-			Outcome:          OutcomeConflict,
-			ConflictingPaths: paths,
-			Commit:           a.currentPickSHA(ctx, repoDir, shas),
-		}, nil
+		a.log.DebugContext(ctx, "cherry-pick conflicted", "change", rc.Number(), "commit", sha, "paths", len(paths))
+		return ApplyResult{Outcome: OutcomeConflict, ConflictingPaths: paths, Commit: sha}, nil
 	}
 
-	// With --empty=keep, a cherry-pick whose content is already present
-	// still creates a new (empty) commit and HEAD still moves, so comparing
-	// before/after HEAD SHAs cannot detect "empty". Instead compare the
-	// resulting tree against the tree before this Apply call: if they are
-	// identical, nothing was actually applied, regardless of how many
-	// commit objects were created along the way.
+	// With --empty=keep, a cherry-pick whose content is already present still
+	// creates a new (empty) commit and HEAD still moves, so comparing
+	// before/after HEAD SHAs cannot detect "empty". Compare the resulting tree
+	// against the tree before this pick instead.
 	empty, err := a.treeUnchanged(ctx, repoDir, before)
 	if err != nil {
 		return ApplyResult{}, fmt.Errorf("apply #%d: %w", rc.Number(), err)
 	}
+
+	// The commit exists either way (--empty=keep keeps it), and FR-6.5 wants
+	// *each* synthetic commit attributable, so annotate before returning.
+	if err := a.annotate(ctx, repoDir, providerID, rc); err != nil {
+		return ApplyResult{}, fmt.Errorf("apply #%d: %w", rc.Number(), err)
+	}
 	if empty {
 		return ApplyResult{Outcome: OutcomeEmpty}, nil
-	}
-
-	if err := a.annotate(ctx, repoDir, rc); err != nil {
-		return ApplyResult{}, fmt.Errorf("apply #%d: %w", rc.Number(), err)
 	}
 	return ApplyResult{Outcome: OutcomeApplied}, nil
 }
@@ -160,16 +194,14 @@ func (a *CherryPickApplicator) head(ctx context.Context, repoDir string) (string
 }
 
 // annotate rewrites the tip commit message with the Converge trailer
-// (FR-6.5): "<original subject>\n\nConverge-Change: #<number>\nConverge-Source: <source sha>".
-// The trailer deliberately omits the provider id, since session.ResolvedChange
-// does not carry one; the provider is recorded once in session.json.
-func (a *CherryPickApplicator) annotate(ctx context.Context, repoDir string, rc session.ResolvedChange) error {
+// (FR-6.5): "<original subject>\n\nConverge-Change: <provider-id>#<number>\nConverge-Source: <source sha>".
+func (a *CherryPickApplicator) annotate(ctx context.Context, repoDir, providerID string, rc session.ResolvedChange) error {
 	res, err := a.runner.Run(ctx, gitx.Spec{Dir: repoDir, Args: []string{"log", "-1", "--format=%B"}, Category: gitx.CategoryQuery})
 	if err != nil {
 		return fmt.Errorf("read commit message: %w", err)
 	}
 	body := strings.TrimRight(string(res.Stdout), "\n")
-	msg := fmt.Sprintf("%s\n\nConverge-Change: #%d\nConverge-Source: %s\n", body, rc.Number(), rc.SourceSHA())
+	msg := fmt.Sprintf("%s\n\nConverge-Change: %s#%d\nConverge-Source: %s\n", body, providerID, rc.Number(), rc.SourceSHA())
 	spec := gitx.Spec{
 		Dir:      repoDir,
 		Args:     []string{"commit", "--amend", "--allow-empty", "--no-verify", "-F", "-"},
@@ -200,18 +232,4 @@ func (a *CherryPickApplicator) conflictingPaths(ctx context.Context, repoDir str
 	// git diff --name-only already emits paths in tree order, which is
 	// deterministic given a fixed worktree state; no further sort needed.
 	return paths, nil
-}
-
-// currentPickSHA reports which landing commit git was applying when the
-// cherry-pick stopped, falling back to the first requested sha if
-// CHERRY_PICK_HEAD cannot be resolved (defensive only; git always leaves it
-// set on a real conflict).
-func (a *CherryPickApplicator) currentPickSHA(ctx context.Context, repoDir string, shas []string) string {
-	res, err := a.runner.Run(ctx, gitx.Spec{Dir: repoDir, Args: []string{"rev-parse", "--verify", "--quiet", "CHERRY_PICK_HEAD"}, Category: gitx.CategoryQuery})
-	if err == nil {
-		if s := strings.TrimSpace(string(res.Stdout)); s != "" {
-			return s
-		}
-	}
-	return shas[0]
 }

@@ -21,6 +21,10 @@ func newApplicator(t *testing.T) (*CherryPickApplicator, *gitx.ExecRunner) {
 	return NewCherryPickApplicator(runner, testLog()), runner
 }
 
+// testProvider is the provider id threaded into Apply; it must show up in
+// every Converge-Change trailer (FR-6.5).
+const testProvider = "github"
+
 func resolved(t *testing.T, number int, strategy session.Strategy, shas ...string) session.ResolvedChange {
 	t.Helper()
 	rc, err := session.NewResolvedChange(session.ResolvedChangeParams{Number: number, Title: "change", Author: "dev", MergedAt: time.Now(), Strategy: strategy, LandingSHAs: shas, SourceSHA: shas[0]})
@@ -56,7 +60,7 @@ func TestApplyMergeSquashRebase(t *testing.T) {
 	// work directly in a detached copy of the repo at base
 	src.Git("checkout", "-b", "review/test", base)
 
-	res, err := a.Apply(ctx, src.Work, resolved(t, 1, session.StrategyMerge, mergeSHA))
+	res, err := a.Apply(ctx, src.Work, testProvider, resolved(t, 1, session.StrategyMerge, mergeSHA))
 	if err != nil || res.Outcome != OutcomeApplied {
 		t.Fatalf("merge: %v %+v", err, res)
 	}
@@ -64,21 +68,39 @@ func TestApplyMergeSquashRebase(t *testing.T) {
 		t.Error("merge content missing")
 	}
 	msg := src.Git("log", "-1", "--format=%B")
-	if !strings.Contains(msg, "Converge-Change: #1") || !strings.Contains(msg, "Converge-Source: "+mergeSHA) {
+	if !strings.Contains(msg, "Converge-Change: github#1") || !strings.Contains(msg, "Converge-Source: "+mergeSHA) {
 		t.Errorf("trailer missing: %q", msg)
 	}
 
-	res, err = a.Apply(ctx, src.Work, resolved(t, 2, session.StrategySquash, squashSHA))
+	res, err = a.Apply(ctx, src.Work, testProvider, resolved(t, 2, session.StrategySquash, squashSHA))
 	if err != nil || res.Outcome != OutcomeApplied || src.FileContent("HEAD", "b.txt") != "bb\n" {
 		t.Fatalf("squash: %v %+v", err, res)
 	}
 
-	res, err = a.Apply(ctx, src.Work, resolved(t, 3, session.StrategyRebase, rebased...))
+	beforeRebase := src.Head()
+	res, err = a.Apply(ctx, src.Work, testProvider, resolved(t, 3, session.StrategyRebase, rebased...))
 	if err != nil || res.Outcome != OutcomeApplied || src.FileContent("HEAD", "c.txt") != "c\n" || src.FileContent("HEAD", "c2.txt") != "c2\n" {
 		t.Fatalf("rebase: %v %+v", err, res)
 	}
 	if n := len(strings.Split(strings.TrimSpace(src.Git("rev-list", base+"..HEAD")), "\n")); n != 4 {
 		t.Errorf("commit count = %d, want 4", n)
+	}
+
+	// FR-6.5: *every* synthetic commit of a multi-commit rebase pick carries
+	// the trailer, not just the tip. Amending only the tip leaves the first
+	// of the two rebase commits unattributed and fails here.
+	newCommits := strings.Split(strings.TrimSpace(src.Git("rev-list", beforeRebase+"..HEAD")), "\n")
+	if len(newCommits) != 2 {
+		t.Fatalf("rebase produced %d commits, want 2", len(newCommits))
+	}
+	for _, c := range newCommits {
+		body := src.Git("log", "-1", "--format=%B", c)
+		if !strings.Contains(body, "Converge-Change: github#3") {
+			t.Errorf("commit %s missing trailer: %q", c, body)
+		}
+		if !strings.Contains(body, "Converge-Source: "+rebased[0]) {
+			t.Errorf("commit %s missing source trailer: %q", c, body)
+		}
 	}
 	_ = runner
 }
@@ -114,22 +136,38 @@ func TestApplyEmptyPickIsNotAnError(t *testing.T) {
 
 	a, _ := newApplicator(t)
 	src.Git("checkout", "-b", "review/test", base)
-	if res, err := a.Apply(context.Background(), src.Work, resolved(t, 1, session.StrategySquash, first)); err != nil || res.Outcome != OutcomeApplied {
+	if res, err := a.Apply(context.Background(), src.Work, testProvider, resolved(t, 1, session.StrategySquash, first)); err != nil || res.Outcome != OutcomeApplied {
 		t.Fatalf("first: %v %+v", err, res)
 	}
-	res, err := a.Apply(context.Background(), src.Work, resolved(t, 2, session.StrategySquash, second))
+	before := src.Head()
+	res, err := a.Apply(context.Background(), src.Work, testProvider, resolved(t, 2, session.StrategySquash, second))
 	if err != nil {
 		t.Fatalf("second: %v", err)
 	}
-	if res.Outcome != OutcomeApplied && res.Outcome != OutcomeEmpty {
-		t.Fatalf("empty pick must not fail: %+v", res)
+	// Exactly OutcomeEmpty. `--empty=keep` still creates a commit and still
+	// advances HEAD on a no-op pick, so a HEAD-SHA comparison (before != after)
+	// would classify this as OutcomeApplied and fail here; only the tree
+	// comparison gets it right.
+	if res.Outcome != OutcomeEmpty {
+		t.Fatalf("outcome = %q, want %q (%+v)", res.Outcome, OutcomeEmpty, res)
+	}
+	if src.Head() == before {
+		t.Error("expected --empty=keep to create a commit and move HEAD")
 	}
 	if strings.TrimSpace(src.Git("status", "--porcelain")) != "" {
 		t.Error("worktree dirty after empty pick")
 	}
+	// Even the empty commit is attributable (FR-6.5).
+	if msg := src.Git("log", "-1", "--format=%B"); !strings.Contains(msg, "Converge-Change: github#2") {
+		t.Errorf("empty commit missing trailer: %q", msg)
+	}
 }
 
-func TestApplyConflictReportsPaths(t *testing.T) {
+// conflictingRepo builds two independent squash commits that both rewrite the
+// same line of shared.txt, and checks out a fresh review branch at base. The
+// returned shas conflict with each other when applied in either order.
+func conflictingRepo(t *testing.T) (*testutil.Repo, string, string) {
+	t.Helper()
 	src := testutil.NewRepo(t)
 	src.Commit("shared.txt", "original\n", "seed")
 	base := src.Head()
@@ -158,13 +196,19 @@ func TestApplyConflictReportsPaths(t *testing.T) {
 	src.Branch("stage/b")
 	bSHA := src.Squash("feat/b", "squash b")
 
-	a, _ := newApplicator(t)
 	src.Git("checkout", "-b", "review/test", base)
+	return src, aSHA, bSHA
+}
+
+func TestApplyConflictReportsPaths(t *testing.T) {
+	src, aSHA, bSHA := conflictingRepo(t)
+
+	a, _ := newApplicator(t)
 	// apply b first, then a: the same line conflicts
-	if _, err := a.Apply(context.Background(), src.Work, resolved(t, 2, session.StrategySquash, bSHA)); err != nil {
+	if _, err := a.Apply(context.Background(), src.Work, testProvider, resolved(t, 2, session.StrategySquash, bSHA)); err != nil {
 		t.Fatal(err)
 	}
-	res, err := a.Apply(context.Background(), src.Work, resolved(t, 1, session.StrategySquash, aSHA))
+	res, err := a.Apply(context.Background(), src.Work, testProvider, resolved(t, 1, session.StrategySquash, aSHA))
 	if err != nil {
 		t.Fatalf("conflict must not be an error: %v", err)
 	}
@@ -179,6 +223,39 @@ func TestApplyConflictReportsPaths(t *testing.T) {
 		t.Error("worktree should remain conflicted")
 	}
 	if err := a.Abort(context.Background(), src.Work); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+}
+
+// A cherry-pick that fails with a non-1 exit code is a hard failure, not a
+// conflict. git leaves the previous change's unmerged paths and
+// CHERRY_PICK_HEAD in place, so classifying on "any non-zero exit" would
+// return OutcomeConflict with another change's paths and SHA and a nil error.
+func TestApplyHardGitFailureIsAnError(t *testing.T) {
+	src, aSHA, bSHA := conflictingRepo(t)
+
+	a, _ := newApplicator(t)
+	ctx := context.Background()
+	res, err := a.Apply(ctx, src.Work, testProvider, resolved(t, 1, session.StrategySquash, bSHA))
+	if err != nil || res.Outcome != OutcomeApplied {
+		t.Fatalf("first: %v %+v", err, res)
+	}
+	res, err = a.Apply(ctx, src.Work, testProvider, resolved(t, 2, session.StrategySquash, aSHA))
+	if err != nil || res.Outcome != OutcomeConflict {
+		t.Fatalf("second must conflict: %v %+v", err, res)
+	}
+
+	// The worktree is now left with unmerged paths. git refuses to start
+	// another cherry-pick at all: "fatal: cherry-pick failed", exit 128.
+	third := resolved(t, 3, session.StrategySquash, bSHA)
+	res, err = a.Apply(ctx, src.Work, testProvider, third)
+	if err == nil {
+		t.Fatalf("hard git failure must be an error, got %+v", res)
+	}
+	if res.Outcome != "" {
+		t.Errorf("no outcome may be reported on a hard failure, got %+v", res)
+	}
+	if err := a.Abort(ctx, src.Work); err != nil {
 		t.Fatalf("abort: %v", err)
 	}
 }
