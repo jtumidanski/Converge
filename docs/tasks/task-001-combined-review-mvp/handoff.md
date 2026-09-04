@@ -16,7 +16,7 @@ and what a future session must not forget.
 
 ## 1. Status
 
-**13 of 30 tasks complete.** Phases A (foundations), B (providers) and C (git
+**13 of 30 tasks complete, and Task 14 implemented but not yet reviewed.** Phases A (foundations), B (providers) and C (git
 layers) are finished; Phase D (review domain) is over half done.
 
 | Phase | Tasks | State |
@@ -24,13 +24,12 @@ layers) are finished; Phase D (review domain) is over half done.
 | A — Foundations | 1–3 | complete |
 | B — Providers | 4–6 | complete |
 | C — Git layers | 7–9 | complete |
-| D — Review domain | 10–17 | 10–13 complete; **14 in progress**; 15–17 not started |
+| D — Review domain | 10–17 | 10–13 complete; **14 committed, not reviewed**; 15–17 not started |
 | E — HTTP API | 18–20 | not started |
 | F — Frontend | 21–26 | not started |
 | G — Packaging, CI, docs | 27–30 | not started |
 
-Commit range so far: `75f52df..e18e8fe` (plus Task 14's commit if it landed —
-check `git log`).
+Commit range so far: `75f52df..e95bab5`.
 
 ### Completed tasks and their commit ranges
 
@@ -49,18 +48,33 @@ check `git log`).
 | 11 | Session model, store, recovery, sweep | `b05f695..144d237` | clean (**3 fix rounds**) |
 | 12 | Input validation, messages, landing resolution | `144d237..ffb360f` | clean (1 fix round) |
 | 13 | Resolve pipeline (base selection) | `ffb360f..e18e8fe` | clean (1 fix round) |
+| 14 | Cherry-pick applicator | `e18e8fe..e95bab5` | **committed, review pending** |
 
 ### Exactly where to resume
 
-**Task 14 (cherry-pick applicator) was dispatched and its implementer was still
-running when this pause was taken.** Before doing anything else:
+**Task 14 (cherry-pick applicator) is implemented and committed at `e95bab5`, but
+has NOT been reviewed.** The gate is clean (13 packages, vet, lint, build).
 
-1. `git log --oneline -3` and `git status --short` in the worktree.
-2. If a Task 14 commit exists and the tree is clean → **the next action is to
-   dispatch Task 14's task review** (see §3 for the loop). It has *not* been
-   reviewed.
-3. If nothing was committed → re-dispatch the Task 14 implementer. **Assume the
-   original agent may still be alive** (see Ruling R7); check the tree first.
+**The next action is to dispatch Task 14's task review** —
+`backend-guidelines-reviewer`, base `e18e8fe`, head `e95bab5` — then run the
+normal fix loop (§3).
+
+Make **this** the review's priority question. The implementer declared one
+load-bearing deviation from the brief:
+
+> The empty-outcome check compares **tree state** (`git diff --quiet <before> HEAD`)
+> rather than the brief's `after == before` HEAD-SHA equality, because
+> `--empty=keep` always advances `HEAD` even for a no-op pick — so the brief's
+> check could never fire.
+
+If that reasoning is right, the brief's version would have misclassified **every**
+empty pick as applied, which is exactly this plan's recurring defect class (§2).
+It needs verifying against real git rather than accepting — the implementer says
+they did so by hand, and their transcript is in
+`.superpowers/sdd/plan/task-14-report.md`. The implementer also amended two of the
+brief's test setups (empty-pick and conflict) that failed spuriously when squash
+branches were built sequentially through `main` instead of independently off
+`base`; that also wants checking.
 
 Task briefs for all 30 tasks are pre-generated at
 `.superpowers/sdd/plan/task-N-brief.md`. Per-task audits are committed at
