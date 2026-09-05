@@ -409,8 +409,16 @@ func TestServiceStartBuildRespectsMaxConcurrentBuilds(t *testing.T) {
 	// queued/entered condition or the "all builds entered" hook. If the
 	// watchdog fires, the test did not observe what it set out to prove and
 	// must fail loudly instead of relying on peak == limit to catch it.
+	//
+	// Both timers below are driven from barrierWait so their ordering is
+	// deterministic: the deadline loop always gives up first and the watchdog
+	// is strictly later, a pure hang-guard. When they were both 120s the
+	// watchdog (armed earlier) won by construction and the deadline branch was
+	// dead code; either branch reports a failure now, but only one of them
+	// decides.
+	const barrierWait = 120 * time.Second
 	var watchdogFired atomic.Bool
-	watchdog := time.AfterFunc(120*time.Second, func() {
+	watchdog := time.AfterFunc(barrierWait+30*time.Second, func() {
 		watchdogFired.Store(true)
 		open()
 	})
@@ -448,7 +456,7 @@ func TestServiceStartBuildRespectsMaxConcurrentBuilds(t *testing.T) {
 	// semaphore), so this loop always terminates on the condition rather than
 	// on the deadline; the deadline only exists so a regression is an
 	// assertion, not a hang.
-	deadline := time.Now().Add(120 * time.Second)
+	deadline := time.Now().Add(barrierWait)
 	for !opened() {
 		mu.Lock()
 		got := entered
@@ -514,9 +522,27 @@ func queuedOnSemaphore() int {
 		}
 		buf = make([]byte, 2*len(buf))
 	}
-	const waiting = "internal/review.(*Service).StartBuild.func1("
+	return countParkedInSelect(string(buf), semaphoreSelectFrame)
+}
+
+// semaphoreSelectFrame is the topmost stack frame of a build goroutine that is
+// parked on StartBuild's semaphore select. If StartBuild's goroutine is renamed
+// or its select moves, this string stops matching — which is why
+// TestCountParkedInSelect pins the parser and
+// TestQueuedOnSemaphoreFrameNameIsCurrent pins this string against the live
+// runtime.
+const semaphoreSelectFrame = "internal/review.(*Service).StartBuild.func1("
+
+// countParkedInSelect is the pure parser behind queuedOnSemaphore. It counts
+// goroutines in dump (the output of runtime.Stack(buf, true)) that are both in
+// the "select" wait state and whose *topmost* frame contains frame.
+//
+// It is separated from runtime.Stack so it can be tested deterministically: a
+// matcher that silently over- or under-counts would make the concurrency test
+// blind, and that failure mode is invisible from a green concurrency run.
+func countParkedInSelect(dump, frame string) int {
 	count := 0
-	for _, g := range strings.Split(string(buf), "\n\n") {
+	for _, g := range strings.Split(dump, "\n\n") {
 		lines := strings.Split(g, "\n")
 		if len(lines) < 2 || !strings.HasPrefix(lines[0], "goroutine ") {
 			continue
@@ -524,11 +550,109 @@ func queuedOnSemaphore() int {
 		if !strings.Contains(lines[0], "[select") {
 			continue
 		}
-		if strings.Contains(lines[1], waiting) {
+		if strings.Contains(lines[1], frame) {
 			count++
 		}
 	}
 	return count
+}
+
+// dumpGoroutine renders one goroutine block in runtime.Stack's format: a header
+// line carrying the wait state, then frame/file line pairs, topmost frame first.
+func dumpGoroutine(id int, state string, frames ...string) string {
+	b := fmt.Sprintf("goroutine %d [%s]:\n", id, state)
+	for i, fr := range frames {
+		b += fr + "\n\t/src/converge/internal/review/service.go:" + fmt.Sprint(100+i) + " +0x1c\n"
+	}
+	return b
+}
+
+// TestCountParkedInSelect pins the goroutine-dump parser that
+// queuedOnSemaphore depends on. Without it, breaking the matcher only shows up
+// as the concurrency test timing out after two minutes.
+func TestCountParkedInSelect(t *testing.T) {
+	const frame = semaphoreSelectFrame
+	parked := dumpGoroutine(11, "select", // queued: the select frame is topmost
+		"github.com/jtumidanski/converge/internal/review.(*Service).StartBuild.func1(0xc000123456)")
+	parkedTwo := dumpGoroutine(12, "select",
+		"github.com/jtumidanski/converge/internal/review.(*Service).StartBuild.func1(0xc000abcdef)")
+	running := dumpGoroutine(13, "select", // holds a slot: StartBuild.func1 is below Build
+		"github.com/jtumidanski/converge/internal/review.(*Service).Build(0xc000000001, {0x0, 0x0})",
+		"github.com/jtumidanski/converge/internal/review.(*Service).StartBuild.func1(0xc000000002)")
+	chanRecv := dumpGoroutine(14, "chan receive", // right frame, wrong wait state
+		"github.com/jtumidanski/converge/internal/review.(*Service).StartBuild.func1(0xc000000003)")
+	unrelated := dumpGoroutine(15, "select",
+		"github.com/jtumidanski/converge/internal/session.(*Store).retryCleanup(0xc000000004)")
+	header := "goroutine 1 [running]:\nmain.main()\n\t/src/main.go:1 +0x1\n"
+
+	tests := []struct {
+		name  string
+		dump  string
+		frame string
+		want  int
+	}{
+		{"empty dump", "", frame, 0},
+		{"no goroutine matches", header + "\n" + unrelated, frame, 0},
+		{"one parked", header + "\n" + parked, frame, 1},
+		{"two parked among noise", strings.Join([]string{header, parked, running, unrelated, parkedTwo, chanRecv}, "\n"), frame, 2},
+		{"a goroutine holding a slot is not counted", header + "\n" + running, frame, 0},
+		{"the frame in a non-select wait state is not counted", header + "\n" + chanRecv, frame, 0},
+		// The point of the whole helper: a frame name that no longer matches
+		// the runtime's must count zero, so the concurrency test's wait
+		// condition can never be satisfied and its watchdog must fire.
+		{"a stale frame name counts nothing", strings.Join([]string{header, parked, parkedTwo}, "\n"), frame + "_MISMATCH", 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := countParkedInSelect(tc.dump, tc.frame); got != tc.want {
+				t.Errorf("countParkedInSelect = %d, want %d\ndump:\n%s", got, tc.want, tc.dump)
+			}
+		})
+	}
+}
+
+// TestQueuedOnSemaphoreFrameNameIsCurrent pins semaphoreSelectFrame against the
+// live runtime rather than against a hand-written dump: it parks a real build
+// on a full semaphore and requires queuedOnSemaphore to see it. A rename of
+// StartBuild's goroutine fails here, in under a second, instead of silently
+// turning the concurrency test into a two-minute no-op.
+func TestQueuedOnSemaphoreFrameNameIsCurrent(t *testing.T) {
+	f := newServiceFixtureWith(t, 1)
+
+	release := make(chan struct{})
+	var once sync.Once
+	open := func() { once.Do(func() { close(release) }) }
+	defer open()
+	entered := make(chan struct{}, 2)
+	f.app.set(func(context.Context, session.ResolvedChange) {
+		entered <- struct{}{}
+		<-release
+	}, nil)
+
+	holder := f.create(t).ID()
+	queued := f.create(t).ID()
+	f.svc.StartBuild(context.Background(), holder)
+	select {
+	case <-entered:
+	case <-time.After(60 * time.Second):
+		t.Fatal("the first build never reached Apply")
+	}
+	f.svc.StartBuild(context.Background(), queued)
+
+	deadline := time.Now().Add(60 * time.Second)
+	for queuedOnSemaphore() < 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("queuedOnSemaphore never saw the parked build: %q no longer matches StartBuild's goroutine frame", semaphoreSelectFrame)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	open()
+	for _, id := range []string{holder, queued} {
+		if got := f.awaitTerminal(t, id, 120*time.Second); got.Status() != session.StatusReady {
+			t.Fatalf("session %s status = %s err = %+v", id, got.Status(), got.Error())
+		}
+	}
 }
 
 // TestServiceBuildRecordsFailureOnTheLiveSession covers every failure the
