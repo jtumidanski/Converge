@@ -514,7 +514,7 @@ func queuedOnSemaphore() int {
 		}
 		buf = make([]byte, 2*len(buf))
 	}
-	const waiting = "internal/review.(*Service).StartBuild.func1_MUTATED_NOMATCH("
+	const waiting = "internal/review.(*Service).StartBuild.func1("
 	count := 0
 	for _, g := range strings.Split(string(buf), "\n\n") {
 		lines := strings.Split(g, "\n")
