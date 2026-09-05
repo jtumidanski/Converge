@@ -911,3 +911,129 @@ held. **Suspicion is not a verdict; check the cheap decisive thing.**
   loop, because the installed versions are correct and there is nothing to
   fix in code. It is a trust finding, not a code finding. *Cost: none to the
   code; every future version-drift claim now needs registry verification.*
+
+---
+
+## 1e. Status (supersedes §1d) — end of session 5
+
+**24 of 30 tasks complete.** Phases A–E closed; Phase F is four of six through.
+
+| Phase | Tasks | State |
+|---|---|---|
+| A–E | 1–20 | complete |
+| F — Frontend | 21–26 | **21–24 complete**; 25–26 not started |
+| G — Packaging, CI, docs | 27–30 | not started |
+
+| Task | Subject | Range | Outcome |
+|---|---|---|---|
+| 22 | API types, client, services | `6ee62b1..18ae128` | clean (0 fix rounds) |
+| 23 | React Query hooks, selection state | `f4de1a6..5110047` | clean (1 fix round) |
+| 24 | Shared components, repo selection | `80d2969..8b71cd3` | clean (1 fix round) |
+
+### Exactly where to resume
+
+**The next action is Task 25.** Nothing is in flight; the tree is clean at
+`1639cf9`, no live agents. Dispatch from `.superpowers/sdd/plan/task-25-brief.md`
+with base `1639cf9`, using the `task-implementer` agent.
+
+Note that §1d told this session to dispatch Task 22 from `571524b`, but two docs
+commits had landed after it was written. **Re-read `git rev-parse HEAD` yourself
+rather than trusting the base recorded here** — the ledger's last line is more
+current than this section by construction.
+
+### What changed in the process this session
+
+Four adjustments, each of which earned its place:
+
+1. **Reviewers now commit their own audit file.** Three consecutive audits had
+   been left untracked and committed by the controller. The cause was the
+   controller's own dispatch line telling reviewers *not* to commit. Since the
+   line was fixed, four consecutive audits have been self-committed.
+2. **Mandate the mutations by name.** Left to choose, implementers pick easy
+   mutations. Task 24's dispatch named the two that mattered
+   (errored-query-renders-`EmptyState`, `onRetry`-as-no-op); both were caught,
+   and the implementer added two tests of its own on noticing the brief
+   under-tested the stated risk.
+3. **Ask the reviewer whether the mutation ratio is thin.** Asked on Task 23, it
+   surfaced seven exported hooks with zero coverage that "both mutations caught"
+   would have concealed. Asked on Task 24, it confirmed 2-of-18 was genuinely
+   isolated. Ask it every time; the answer is not always yes.
+4. **Scale the reviewer tier to the work, not the ceremony.** A 3.2KB fix diff
+   whose review is comparison against a named Go file was handled correctly by
+   haiku in 20 tool calls.
+
+### The lesson that cost the most this session
+
+**When a frontend rule mirrors a backend rule, the backend *code* is the
+contract — not the requirement text both were written from.** Ruling R44 checked
+`repositorySchema` against PRD FR-3.7 and passed it. FR-3.7's prose does not
+spell out the per-segment rule that `gitx.ValidateRepoFullName` actually
+enforces, so `owner/./name` passed the form and 400'd at the API. The fix pins
+the *relationship*: the new schema test's fixtures are byte-identical to
+`validate_test.go`'s, so the test breaks if either side drifts. Apply the same
+shape to any other mirrored rule Tasks 25–30 introduce.
+
+### Twice this session a controller suspicion was checked and found wrong
+
+Both times the resolution came from reading the **library's** semantics rather
+than the code's appearance:
+
+- The `data &&` poll-stop guard in `useReviews` looked like it would freeze a
+  review after a transient failure. TanStack Query v5 does not clear `data` on a
+  mid-poll error, so polling correctly continues.
+- The test wrapper's raised `gcTime` looked like it might be what made the
+  invalidation assertions pass. Production's `createQueryClient()` sets no
+  `gcTime` at all and inherits v5's five-minute default, so the test client's
+  original `gcTime: 0` was the unrepresentative one.
+
+Suspicion is still worth voicing — it costs a sentence in a dispatch. But voice
+it as a question to the reviewer, not as a finding.
+
+### Carried into Tasks 25–26
+
+- **`RepositoryList` and `ProviderPicker` have no `error` prop.** A caller
+  passing `repositories={[]}` during an error state gets a false "No
+  repositories". Safe today only because `SelectRepositoryPage.tsx:54-74`'s
+  exhaustive ternary never calls them in that state. **Tasks 25–26 are the next
+  callers** — they must replicate that discipline or give the components a guard.
+  This is the branch's recurring defect class sitting one careless caller away
+  from being live.
+- **The retry affordance is discharged** — `ErrorBanner`'s `onRetry` is wired to
+  a real refetch and tested. Reuse it; a review whose first fetch fails before
+  any success will not resume polling on its own.
+- **`ManualRepositoryForm` does not populate the React Query cache** (R45). If a
+  Task 25/26 page expects the resolved repository already warm, it will refetch.
+- **The `{ items, page }` list shape carries `hasNext`, not a total**, so no
+  surface can render "page N of M".
+- **Twelve shadcn components remain committed** under `src/components/ui/`.
+  Compose them. If any are still unused at Task 30, that review should delete
+  them (R39).
+
+### Rulings R41–R46
+
+- **R41** — `previousPath` is `string`, not the brief's `string | null`.
+  `review_files.go:13` is a non-pointer `string` with no `omitempty`, so it
+  marshals as `""` and never as null. The reviewer additionally proved no
+  leftover `=== null` checks exist. *Cost: none; the risk was a null test hiding
+  behind a correct type, and it was checked for.*
+- **R42** — accepted `isTerminal()` in place of the brief's inline
+  `status === "CREATING"` poll-stop. The helper is exactly that negation over a
+  status set where `CREATING` is the only non-terminal value. *Cost: none; if a
+  second non-terminal status is added, the helper is the one place to change.*
+- **R43** — the untested `useSelection` render-derivation branch, graded Minor,
+  entered the fix loop anyway. It was the only test that would constrain a
+  deviation from the brief. *Cost: one extra test in a round already dispatching.*
+- **R44** — accepted the fuller Step 3 `repositorySchema` over the brief's
+  contradictory Interfaces version, resolved against PRD FR-3.7. **Partially
+  wrong** — see the lesson above; the gap it left was closed in fix round 1.
+  *Cost: one fix round.*
+- **R45** — accepted `ManualRepositoryForm` calling `repositoriesService.get`
+  directly, against the controller's own dispatch constraint. That constraint
+  targeted bypassing the `unwrap` guards; this goes through the service layer
+  where they live, and is an imperative submit-time one-shot rather than a
+  render-time dependency. Both dependencies of the ruling were verified. *Cost:
+  the resolved repository is not cached, so a later page expecting it warm
+  refetches.*
+- **R46** — the missing `repositorySchema` test file, graded Minor, entered the
+  fix loop. Its absence is precisely why the validation gap survived review.
+  *Cost: one test file written earlier than policy would have.*
