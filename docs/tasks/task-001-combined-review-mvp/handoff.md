@@ -679,3 +679,151 @@ must break the handlers and watch the tests fail rather than read them.
 Task 19 also leaves one thing explicitly for Task 20: `internal/app.New`
 still does not wire `CleanupInterval` into `api.Deps`, so the sweeper is
 started by the router but the interval does not yet flow from config.
+
+---
+
+# SESSION 4 UPDATE
+
+**Everything above still holds except the status sections, which this supersedes.**
+§2 (the defect class), §3 (the execution loop) and §5–§7 remain accurate and are
+still the first thing to read. Rulings R1–R31 stand; R32–R38 are added below.
+
+## 1c. Status (supersedes §1b)
+
+**20 of 30 tasks complete. Phases A–E are closed.**
+
+| Phase | Tasks | State |
+|---|---|---|
+| A — Foundations | 1–3 | complete |
+| B — Providers | 4–6 | complete |
+| C — Git layers | 7–9 | complete |
+| D — Review domain | 10–17 | complete |
+| E — HTTP API | 18–20 | **complete** |
+| F — Frontend | 21–26 | **21 in flight**; 22–26 not started |
+| G — Packaging, CI, docs | 27–30 | not started |
+
+| Task | Subject | Range | Outcome |
+|---|---|---|---|
+| 19 | JSON:API HTTP handlers | `ec1c195..9c462fa` | clean (1 fix round) |
+| 20 | Server binary | `113b55c..89aa9b8` | clean (1 fix round) |
+
+### Exactly where to resume
+
+**Task 21 (frontend scaffold) was dispatched at base `5ab46a2`.** Check `git log`
+first: if a Task 21 commit exists, the next action is its task review
+(`review-package … 5ab46a2 <head>`, dispatched on `frontend-guidelines-reviewer`);
+if not, re-dispatch from `.superpowers/sdd/plan/task-21-brief.md`.
+
+## 2c. The two lessons this session added
+
+**A mutation sweep is not a coverage report — and I mistook one for the other.**
+Task 19's review ran 39 mutations and I approved it. Task 20 then found that
+`internal/api/router.go` registered the embedded UI at `mux.Handle("GET /", …)`,
+which **panics at registration** against the existing `"/api/"` pattern (verbatim:
+`pattern "GET /" … conflicts with pattern "/api/": GET / matches fewer methods
+than /api/, but has a more general path pattern`). It survived a 39-mutation
+review because **no test anywhere set `Deps.UI` non-nil** — the entire UI branch
+was unreachable from tests. Mutation testing measures whether *exercised* code is
+protected; it says nothing about code no test reaches. **Every review from here
+should check reachability before it checks protection**, and Task 30 should sweep
+the branch for unreached branches specifically.
+
+**A mutant that fails to compile looks exactly like a mutant that was caught.**
+Task 20's implementer reported mutations M5/M6 as evidence; they did not build
+(`"errors" imported and not used`), and a build failure exits non-zero exactly as
+a failing assertion does. The reviewer noticed and reformulated them. **Every
+mutation instruction now requires the mutant to BUILD and the failure to be an
+ASSERTION failure with its text quoted.** A non-zero exit is not evidence. The
+rule worked on its first outing in Task 20's re-review.
+
+## 3c. Carried into Phase F — read before Task 21's review
+
+- **The first `npm run build` changes backend behaviour.** Vite's `build.outDir`
+  is `../backend/internal/ui/dist`, so the first frontend build flips
+  `ui.Present()` from false to true and starts exercising `uiHandler`'s present
+  branch. `cmd/converge`'s own suite has never reached that branch — proven, not
+  assumed: stripping the method gate left `TestServerServesHealthAndShutsDown`
+  passing. Coverage today is real but lives only in `internal/api`, which forces
+  `present=true` with an `fstest.MapFS`. **Task 21 or 30 should add a
+  `cmd/converge` test that forces a populated UI rather than depending on ambient
+  `dist` state.** Run the BACKEND gate after any frontend build.
+- **The backend wire format is pinned by backend tests.** Field names, the error
+  `code` set and resource `type` values are contract. Treat a frontend/backend
+  mismatch as a frontend bug until a test says otherwise.
+- **The error-code set the frontend must handle is the spec set PLUS the four
+  transport codes** kept by R32: `INVALID_REQUEST`, `NOT_FOUND`,
+  `NOT_ACCEPTABLE`, `INVALID_STATE`. There is still no `INTERNAL` code.
+- **Task 21's pinned versions are dated** "latest verified 2026-09-04" and may no
+  longer resolve. The brief already concedes fragility on the TypeScript 5-vs-7
+  case. Drift must be reported, not silently floated.
+
+## 4c. Rulings R32–R38
+
+- **R32** — the four transport codes `INVALID_REQUEST`, `NOT_FOUND`,
+  `NOT_ACCEPTABLE`, `INVALID_STATE` **stay**. They cover transport and routing
+  failures the spec's domain set never enumerates; `REVIEW_NOT_READY` is still
+  correctly used for the domain 409. The alternatives were reusing a domain code
+  that lies about the cause — this plan's defect class exactly — or shipping an
+  empty code. Categorically unlike the banned `INTERNAL`, which R27 excluded by a
+  domain-classification decision, not a transport gap. *Cost: Phase F handles four
+  extra strings; reversing it is four literals and their tests.*
+- **R33** — accepted Task 19's fix touching `internal/review/service.go`, outside
+  the scope I set. `internal/api` holds a `Service`, not a `Store`, so wiring
+  `Store.Corrupted` to the HTTP layer *requires* exposing it on `Service`. The
+  constraint was mine and it was too tight. *Cost: one method of public surface.*
+- **R34** — the sweeper is started by `NewRouter` **only**; `main.go` must not
+  start a second. The brief said otherwise and was wrong. What was genuinely
+  missing was that nothing populated `api.Deps.CleanupInterval`/`Store`, so **the
+  sweeper never ran in production at all**. *Cost if wrong: no sweeper anywhere
+  and sessions leak until restart — hence the required exactly-one test.*
+- **R35** — the UI-handler fix landed in Task 20 rather than going back to Task
+  19; the binary cannot boot without it. Flagged its blast radius for measurement,
+  and the measurement found a real regression (see R37). *Cost: none realised.*
+- **R36** — `buildDeps` lives in `cmd/converge/main.go`, not `internal/app.New`;
+  `app.New` has no access to the server lifetime context or the embedded UI FS.
+  R34 required the value to *reach* `api.Deps`, not to arrive by a set route.
+  *Cost: a second binary wanting a sweeper repeats the wiring.*
+- **R37** — `uiHandler` serves **GET and HEAD only**; every other method on an
+  unknown path returns 404 with the JSON:API `NOT_FOUND` code. Restoring a
+  method-restricted pattern was rejected (it panics); 405 was rejected (needs an
+  `Allow` header, leaks which paths are UI-served, and the established contract
+  for an unknown endpoint is `NOT_FOUND`). *Cost: a HEAD/OPTIONS preflight against
+  a UI route gets 404; OPTIONS matters only if CORS is added, which this
+  single-origin app does not use.*
+- **R38** — accepted the `listenAndServe` package-level injection seam in
+  `main.go`. Unexported, defaults to `srv.ListenAndServe`, reassigned only by
+  tests that restore it via `t.Cleanup`. The alternative was binding a busy port,
+  which this branch's history says would have shipped a flaky test. *Cost: one
+  line of production surface existing for a test.*
+
+## 5c. New deferred minors (add to §5 and §5a for Task 30)
+
+- `buildDeps(application *app.App, ctx context.Context)` takes context as its
+  **second** parameter, against Go convention. Lint passes; cosmetic.
+- A genuine `ListenAndServe` startup failure (port already in use) is handled but
+  untested — the test binds a free port first. Reported rather than shipping a
+  flaky test.
+- `TestServeTreatsErrServerClosedAsSuccess` never races `ctx.Done()` against
+  `errc`; the injected error returns immediately. The logic is covered, the
+  interleaving is not. Judged low value.
+- `cmd/converge`'s UI-present-branch coverage is contingent on `internal/api`'s
+  tests rather than the binary's own suite (see §3c).
+- **Two audits were left untracked by their reviewers** (`audit-task-19.md`,
+  `audit-task-20.md`) and I committed both. Untracked scratch here is exactly what
+  a `git clean` destroys — **tell reviewers the audit path is a committed
+  artifact.**
+
+## 6c. Measurement rules now in force (all earned, none theoretical)
+
+1. Require a mutation **ratio**, not an anecdote, under the project's own test
+   command.
+2. Require **grep proof the mutation landed** — a line-number mutation once
+   drifted off target and produced a false verdict that cost a whole round.
+3. Require the mutant to **build**, and the failure to be a **quoted assertion**.
+4. Mutate in a **scratch copy outside the worktree** — two agents once collided
+   mid-run.
+5. Check **reachability before protection** — mutation coverage says nothing
+   about branches no test enters.
+6. **Re-run the implementer's mutations yourself.** Since Task 16 every review has
+   done this. It found the Task 18 miss, confirmed Task 17's fixes, and in Task 19
+   confirmed a claim that was — for the first time in five — actually true.
