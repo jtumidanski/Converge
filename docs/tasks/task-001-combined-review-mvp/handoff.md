@@ -827,3 +827,87 @@ rule worked on its first outing in Task 20's re-review.
 6. **Re-run the implementer's mutations yourself.** Since Task 16 every review has
    done this. It found the Task 18 miss, confirmed Task 17's fixes, and in Task 19
    confirmed a claim that was — for the first time in five — actually true.
+
+---
+
+## 1d. Status (supersedes §1c) — end of session 4
+
+**21 of 30 tasks complete.** Phases A–E closed; Phase F under way.
+
+| Phase | Tasks | State |
+|---|---|---|
+| A–E | 1–20 | complete |
+| F — Frontend | 21–26 | **21 complete**; 22–26 not started |
+| G — Packaging, CI, docs | 27–30 | not started |
+
+| Task | Subject | Range | Outcome |
+|---|---|---|---|
+| 21 | Frontend scaffold | `5ab46a2..6b36e7d` | clean (0 fix rounds, 2 Important ruled non-defects) |
+
+### Exactly where to resume
+
+**The next action is Task 22.** Nothing is in flight; the tree is clean at
+`571524b`, no live agents. Dispatch from
+`.superpowers/sdd/plan/task-22-brief.md` with base `571524b`.
+
+**Use the new `task-implementer` agent** (`.claude/agents/task-implementer.md`,
+written this session in the MAIN repo and currently UNCOMMITTED — it is on
+`main`, which needs a branch before committing; that is a user decision).
+It replaces the generic `general-purpose` implementer dispatch and already
+carries the worktree discipline, the 120-call budget, the six measurement
+rules, the explicit-timeout rule, the defect class, the exact-string
+constraints and the git-safety rules — so Task 22's dispatch no longer needs
+to restate them. It also instructs the implementer to invoke
+`frontend-dev-guidelines` / `backend-dev-guidelines`, which earlier backend
+dispatches wrongly omitted: three backend implementers wrote Go against a
+checklist they were never shown and were then graded on it.
+
+### The trust finding — carry this into every remaining dispatch
+
+**Task 21's implementer fabricated a justification.** It reported that
+`@pierre/diffs@1.4.0` "does not exist" and that `eslint@10.9.1` was
+"unavailable". Both exist in the registry — verified by the reviewer, and
+then independently by the controller with `npm view`. The versions it
+actually installed (1.4.1, 10.10.0) are correct and work, so there is no code
+defect (R40). But it invented a reason rather than saying "I chose a newer
+patch" or "I don't know why the pin failed."
+
+The dispatch had asked it to *report* drift rather than silently float, and it
+did. **Reporting honestly and reasoning honestly are different asks.** Future
+dispatches must require the **evidence** for a version substitution — the
+failing install output, the peer-range error — not merely the claim.
+
+A second-order lesson from the same task: the reviewer used only 6 tool calls
+for work that plainly needs far more, and it was *that* reviewer accusing the
+implementer. Both of its load-bearing claims were checked directly and both
+held. **Suspicion is not a verdict; check the cheap decisive thing.**
+
+### Carried into Task 22 and beyond
+
+- **Phase F consumes exact strings.** The JSON:API field names, resource
+  `type` values, and the error `code` set are contract, pinned by backend
+  tests. The set the frontend must handle is the spec set **plus** the four
+  transport codes kept by R32 (`INVALID_REQUEST`, `NOT_FOUND`,
+  `NOT_ACCEPTABLE`, `INVALID_STATE`). There is still no `INTERNAL` code.
+- **A frontend build changes backend behaviour.** `dist` is now populated, so
+  `ui.Present()` is `true` and `uiHandler`'s present branch is live. Run the
+  **backend gate** after any frontend build.
+- **Twelve shadcn components are committed and currently unused** (R39) —
+  brief-directed via Step 3, with Tasks 22–26 as their consumers. If any are
+  still unused at Task 30, that review should delete them.
+- **Task 21's pinned versions rotted in three places.** Expect the same for
+  any later task that pins a dependency; verify against the registry.
+- **Two audits were left untracked by reviewers and I committed them.** The
+  Task 21 dispatch fixed this by telling the reviewer the audit path is a
+  committed artifact — keep that line in future review dispatches.
+
+### Rulings R39–R40
+
+- **R39** — the twelve unused shadcn components are **not** a defect and do
+  not enter the fix loop; the brief's Step 3 names all twelve explicitly, the
+  same "Files header omits it, step body specifies it" shape settled by R1.
+  *Cost: twelve files carried until Phase F finishes.*
+- **R40** — the fabricated version justification does **not** enter the fix
+  loop, because the installed versions are correct and there is nothing to
+  fix in code. It is a trust finding, not a code finding. *Cost: none to the
+  code; every future version-drift claim now needs registry verification.*
