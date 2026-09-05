@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -371,21 +372,39 @@ func TestResolveBaseIsRootCommit(t *testing.T) {
 	}
 }
 
-// cancelProvider errors immediately for a chosen change number and blocks
-// every other GetChange on ctx.Done() (with a long fallback timer), so a
-// test can prove fetchChanges cancels siblings on the first error instead of
-// letting them run to completion.
+// cancelProvider errors for a chosen change number and blocks every other
+// GetChange on ctx.Done() (with a long fallback timer), so a test can prove
+// fetchChanges cancels siblings on the first error instead of letting them
+// run to completion.
+//
+// The errAt call does not return its error until every sibling has entered
+// GetChange (armed.Wait() below): fetchChanges' outer per-goroutine select —
+// `select { case sem <- struct{}{}: ...; case <-cctx.Done(): ... }` — has a
+// capacity-4 semaphore and exactly 4 goroutines, so with no barrier all four
+// normally acquire a slot immediately; but if the errAt goroutine happens to
+// return (and cancel cctx) before a sibling's goroutine has even reached that
+// select, Go's select picks pseudo-randomly between the now-ready sem-acquire
+// and ctx.Done() cases, and a sibling can take the cctx.Done() branch and
+// return *without ever calling GetChange* — never touching cancelledCount.
+// That is the flake this barrier removes (reproduced and confirmed below):
+// waiting for every sibling to have entered GetChange first guarantees each
+// one already won its semaphore slot deterministically (cctx cannot yet be
+// cancelled), so cancellation can only ever be observed inside the inner
+// select here, exactly what the assertions below check.
 type cancelProvider struct {
 	*fake.Provider
 	errAt          int
+	armed          sync.WaitGroup
 	cancelledCount int32
 	completedCount int32
 }
 
 func (c *cancelProvider) GetChange(ctx context.Context, repo provider.Repository, number int) (provider.ChangeRequest, error) {
 	if number == c.errAt {
+		c.armed.Wait()
 		return provider.ChangeRequest{}, provider.ErrNotFound
 	}
+	c.armed.Done()
 	select {
 	case <-ctx.Done():
 		atomic.AddInt32(&c.cancelledCount, 1)
@@ -413,6 +432,7 @@ func TestFetchChangesCancelsSiblingsOnFirstError(t *testing.T) {
 	r := NewResolver(cache, testLog())
 
 	numbers := []int{1, 2, 3, 4}
+	cp.armed.Add(len(numbers) - 1) // every sibling except errAt itself
 	start := time.Now()
 	_, err = r.fetchChanges(context.Background(), cp, repo, numbers)
 	elapsed := time.Since(start)
@@ -512,5 +532,66 @@ func TestLandingWithFetchAbsorbsFetchFailure(t *testing.T) {
 	var re *session.ReviewError
 	if !errors.As(err, &re) || re.Code != session.CodeMissingCommits {
 		t.Fatalf("err = %v, want MISSING_COMMITS (FetchSHA's failure absorbed into the standard no-candidate outcome)", err)
+	}
+}
+
+// commitsErrProvider wraps a provider.GitProvider and forces GetChangeCommits
+// to fail for one specific change number, delegating every other call
+// (including GetChangeCommits for any other number) to the inner provider.
+// fake.Provider's FailWith is a one-shot error consumed by the *next* call to
+// any method, including the concurrent GetChange calls fetchChanges issues
+// before the per-change GetChangeCommits loop runs — it cannot target
+// GetChangeCommits alone. This wrapper is the only way to exercise the
+// GetChangeCommits error branches of Resolve's per-change loop (resolve.go
+// lines ~140-148), which Task 13 left with no unit coverage at all.
+type commitsErrProvider struct {
+	provider.GitProvider
+	number int
+	err    error
+}
+
+func (p *commitsErrProvider) GetChangeCommits(ctx context.Context, repo provider.Repository, number int) ([]provider.Commit, error) {
+	if number == p.number {
+		return nil, p.err
+	}
+	return p.GitProvider.GetChangeCommits(ctx, repo, number)
+}
+
+// TestResolveGetChangeCommitsTooManyCommits pins the ErrTooManyCommits branch
+// of Resolve's per-change loop: a provider that cannot enumerate a change's
+// commits (GitLab/GitHub return this when a change has more commits than the
+// API will list) must be reported as BASE_UNDETERMINED, not a generic
+// provider failure, so the operator sees why the change couldn't be verified.
+func TestResolveGetChangeCommitsTooManyCommits(t *testing.T) {
+	f := newResolveFixture(t)
+	wrapped := &commitsErrProvider{GitProvider: f.prov, number: 1, err: provider.ErrTooManyCommits}
+	var re *session.ReviewError
+	_, err := f.resolver.Resolve(context.Background(), wrapped, f.repo, "main", []int{1}, nil)
+	if !errors.As(err, &re) || re.Code != session.CodeBaseUndetermined || re.Change != 1 {
+		t.Fatalf("err = %v, want BASE_UNDETERMINED for change 1", err)
+	}
+}
+
+// TestResolveGetChangeCommitsProviderError pins the two remaining branches of
+// the same loop: a classified provider sentinel (ErrAuth) must map through
+// MapProviderError to its specific code, while an error MapProviderError does
+// not recognise falls back to PROVIDER_UNAVAILABLE rather than being dropped
+// or misreported as a git failure.
+func TestResolveGetChangeCommitsProviderError(t *testing.T) {
+	f := newResolveFixture(t)
+
+	authWrapped := &commitsErrProvider{GitProvider: f.prov, number: 1, err: provider.ErrAuth}
+	var re *session.ReviewError
+	_, err := f.resolver.Resolve(context.Background(), authWrapped, f.repo, "main", []int{1}, nil)
+	if !errors.As(err, &re) || re.Code != session.CodeProviderAuth {
+		t.Fatalf("err = %v, want PROVIDER_AUTH", err)
+	}
+
+	unclassified := errors.New("commits endpoint exploded")
+	unclassifiedWrapped := &commitsErrProvider{GitProvider: f.prov, number: 1, err: unclassified}
+	re = nil
+	_, err = f.resolver.Resolve(context.Background(), unclassifiedWrapped, f.repo, "main", []int{1}, nil)
+	if !errors.As(err, &re) || re.Code != session.CodeProviderUnavailable {
+		t.Fatalf("err = %v, want PROVIDER_UNAVAILABLE for an unclassified error", err)
 	}
 }
