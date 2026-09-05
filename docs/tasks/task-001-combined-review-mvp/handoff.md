@@ -361,12 +361,37 @@ stand; R25–R31 are added below.
 
 ### Exactly where to resume
 
-**Task 15's round-3 scoped re-review (`13bbdba..818a716`) was dispatched but its
-result was never recorded here** — the session ended at its context limit while it
-was in flight. Re-run it, or confirm from the ledger whether it landed.
+**Task 15 is at fix round 4 of 5.** Rounds 1–3 are committed and their re-reviews
+are done. Round 3's re-review came back NEEDS-WORK on one point, and **fix round 4
+was dispatched but its result was never recorded here** — the session ended at its
+context limit while it was in flight.
 
-If it came back clean, Task 15 is complete and **the next action is Task 16**.
-Carry these into Task 16's dispatch:
+**The next action is: confirm round 4 landed (check `git log` for a commit after
+`818a716`), then run its scoped re-review** — base `818a716`, head = round 4's
+commit, using `scripts/review-package`. Then Task 15 is complete.
+
+What round 4 was fixing, and what its re-review must check:
+
+> `TestServiceStartBuildRespectsMaxConcurrentBuilds` had a **dead assertion**.
+> Its watchdog (`service_test.go:406`) is armed *before* the deadline it races
+> (`:441`) is computed, so the watchdog always opens the barrier first and the
+> `t.Errorf` at `:451` is unreachable by construction. A reviewer proved the
+> consequence: breaking `queuedOnSemaphore`'s goroutine-dump matcher
+> (`const waiting`, `:496`) with the semaphore bound left intact produced
+> `ok … 121.487s` — a **silent pass**.
+>
+> Round 4 was told to make the watchdog record a failure (e.g. an `atomic.Bool`
+> checked after the loop), without weakening either peak assertion and without
+> reintroducing the flaky timing-based lower bound. It owes **two** mutation
+> ratios, each ≥10 runs under `go test -race -count=1`: broken matcher (must now
+> fail; currently 0/10) and removed semaphore bound (must stay 10/10).
+
+Round 3's re-review independently confirmed 10/10 mutation kills on all three of
+its items, and md5-verified the four R18/R19 functions byte-identical for the
+third time. So the only thing outstanding on Task 15 is the round-4 test fix.
+
+Once Task 15 closes, **the next action is Task 16**. Carry these into Task 16's
+dispatch:
 
 - Task 16 must cover the `ErrTooManyCommits` and provider-error sub-paths in Task
   13's per-change loop, which still have no unit coverage (carried from §6).
@@ -400,11 +425,20 @@ look for it specifically. Keep doing that in every dispatch.
   forever against a deleted worktree.
 
 **A newer, second failure mode worth its own attention: the silently
-non-discriminating test.** There are now four proven cases — Task 10's sort order,
-Task 14's empty outcome, Task 15's async test, and Task 15's own CAS atomicity
-test. The last one is the sharpest lesson: its mutation *did* reproduce, but only
-at `-count=300`, and passed **40/40** under `go test -race -count=1`, which is the
-command the project actually runs.
+non-discriminating test.** There are now **five** proven cases — Task 10's sort
+order, Task 14's empty outcome, Task 15's async test, Task 15's CAS atomicity
+test, and Task 15's semaphore watchdog. Two of the five are the *same test* in
+successive rounds.
+
+The atomicity case is the sharpest lesson on measurement: its mutation *did*
+reproduce, but only at `-count=300`, and passed **40/40** under
+`go test -race -count=1`, the command the project actually runs.
+
+The watchdog case is the sharpest lesson on *claims*: the implementer asserted
+that a broken goroutine-dump matcher would "fail loudly rather than silently
+pass." A reviewer tested the assertion instead of accepting it, and it was
+false — the test reported `ok` after 121 seconds. **When an implementer claims a
+mechanism fails loudly, make a reviewer break it and watch.**
 
 **Rules that came out of this, and should stay in force:**
 
