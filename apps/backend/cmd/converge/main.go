@@ -22,6 +22,14 @@ import (
 
 const shutdownTimeout = 15 * time.Second
 
+// listenAndServe runs srv until it stops, and exists so tests can inject a
+// genuine startup failure (e.g. "address already in use") deterministically,
+// without racing a real OS port bind. Production always uses the default,
+// which is exactly srv.ListenAndServe().
+var listenAndServe = func(srv *http.Server) error {
+	return srv.ListenAndServe()
+}
+
 // buildDeps assembles the router's Deps from a wired *app.App and the
 // server's lifetime context. This is the one place that feeds
 // application.Config.CleanupInterval (loaded from CLEANUP_INTERVAL_MINUTES)
@@ -86,7 +94,7 @@ func serve(ctx context.Context, env []string) error {
 	errc := make(chan error, 1)
 	go func() {
 		application.Log.Info("listening", slog.String("addr", addr), slog.String("version", buildinfo.Version))
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := listenAndServe(srv); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
 			return
 		}

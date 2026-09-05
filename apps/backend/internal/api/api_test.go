@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/jtumidanski/converge/internal/gitx"
@@ -513,6 +514,58 @@ func TestNewRouterStartsAndStopsSweeper(t *testing.T) {
 	if got, ok := store.Get(id2); !ok || got.Status() != session.StatusCreating {
 		t.Errorf("session swept after BuildContext was cancelled: %+v", got)
 	}
+}
+
+// TestUIRouteServesRealIndexHTMLAndRejectsNonGET composes NewRouter with a
+// non-nil Deps.UI containing a real index.html -- the branch no test
+// anywhere else in this suite reaches (grep 'UI:\|UIPresent' across
+// *_test.go finds nothing else). This is the same hole that let the
+// "GET /" vs "/api/" registration panic ship through Task 19's review: the
+// composed "router serves the UI" path was never executed. It also pins
+// R37: with the UI mounted at "/", every method other than GET/HEAD must
+// get the same 404 NOT_FOUND JSON:API response "/api/" already returns for
+// unknown endpoints, not the SPA's index.html and not a silent 405.
+func TestUIRouteServesRealIndexHTMLAndRejectsNonGET(t *testing.T) {
+	log := testLogger()
+	registry := provider.NewRegistry()
+	uiFS := fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte("<html>real ui</html>")},
+	}
+
+	handler := NewRouter(Deps{Providers: registry, Log: log, UI: uiFS, UIPresent: true})
+
+	w := do(t, handler, http.MethodGet, "/", "")
+	if w.Code != http.StatusOK || w.Body.String() != "<html>real ui</html>" {
+		t.Fatalf("GET / = %d %q, want 200 index.html", w.Code, w.Body.String())
+	}
+
+	w = do(t, handler, http.MethodGet, "/nonexistent", "")
+	if w.Code != http.StatusOK || w.Body.String() != "<html>real ui</html>" {
+		t.Fatalf("GET /nonexistent = %d %q, want 200 index.html (SPA fallback)", w.Code, w.Body.String())
+	}
+
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/nonexistent"},
+		{http.MethodPut, "/nonexistent"},
+		{http.MethodDelete, "/nonexistent"},
+		{http.MethodPost, "/"},
+		{http.MethodPost, "/healthz"},
+	} {
+		w := do(t, handler, tc.method, tc.path, "")
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s %s = %d %q, want 404 NOT_FOUND", tc.method, tc.path, w.Code, w.Body.String())
+			continue
+		}
+		assertErrorCode(t, w, "NOT_FOUND")
+	}
+
+	// /api/ must be unaffected by the UI mount: unknown API endpoints still
+	// get the JSON:API NOT_FOUND contract regardless of method.
+	w = do(t, handler, http.MethodPost, "/api/bogus", "")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("POST /api/bogus = %d, want 404", w.Code)
+	}
+	assertErrorCode(t, w, "NOT_FOUND")
 }
 
 // TestChangeResourceLandingSHAPrefersMergeOverSquash pins changeResource's
