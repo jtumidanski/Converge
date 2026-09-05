@@ -328,3 +328,170 @@ Frontend gate (cwd `apps/frontend`, from Task 21): `npm ci`, `npm run lint`,
 **Before opening a PR**, `CLAUDE.md` requires the code-review step
 (`/audit-plan` or `superpowers:requesting-code-review`); Task 30 is that step, and
 it must be pointed at the deferred-minor and parked lists in the ledger.
+
+---
+---
+
+# SESSION 2 UPDATE
+
+**Everything above this line still holds except §1 (Status), which this section
+supersedes.** §2 (what a successor most needs to know), §3 (the execution loop)
+and §5–§7 remain accurate and are still worth reading first. §4's rulings R1–R24
+stand; R25–R31 are added below.
+
+## 1a. Status (supersedes §1)
+
+**15 of 30 tasks complete.** Phases A–C finished; Phase D (review domain) is
+15/17 done — Tasks 16 and 17 remain.
+
+| Phase | Tasks | State |
+|---|---|---|
+| A — Foundations | 1–3 | complete |
+| B — Providers | 4–6 | complete |
+| C — Git layers | 7–9 | complete |
+| D — Review domain | 10–17 | 10–15 complete; 16–17 not started |
+| E — HTTP API | 18–20 | not started |
+| F — Frontend | 21–26 | not started |
+| G — Packaging, CI, docs | 27–30 | not started |
+
+| Task | Subject | Range | Outcome |
+|---|---|---|---|
+| 14 | Cherry-pick applicator | `e18e8fe..88ad937` | clean (1 fix round) |
+| 15 | Review service + cleaner adapter | `72549d3..818a716` | **3 fix rounds** — 1 Critical, and a Critical regression introduced by round 2 |
+
+### Exactly where to resume
+
+**Task 15's round-3 scoped re-review (`13bbdba..818a716`) was dispatched but its
+result was never recorded here** — the session ended at its context limit while it
+was in flight. Re-run it, or confirm from the ledger whether it landed.
+
+If it came back clean, Task 15 is complete and **the next action is Task 16**.
+Carry these into Task 16's dispatch:
+
+- Task 16 must cover the `ErrTooManyCommits` and provider-error sub-paths in Task
+  13's per-change loop, which still have no unit coverage (carried from §6).
+- **`internal/review/resolve_test.go:426`
+  `TestFetchChangesCancelsSiblingsOnFirstError` is FLAKY** — it failed once in ~11
+  runs with "no sibling goroutine observed cancellation". Task 13 code, untouched
+  by Tasks 14–15. A flaky test in the branch is a real defect; fix it in Task 16
+  or hand it to Task 30 explicitly.
+- Task 17 still owes: git ≥ 2.45 enforcement at startup (`MinGitVersion`,
+  `checkGitVersion`), and wiring `REPOSITORY_CACHE_ROOT` into `mirror.New`.
+- Task 19 still owes the HTTP mapping for `session.ErrNotFound` (the service now
+  *produces* it — see R28).
+
+## 2a. The defect class, updated
+
+§2's list stands at eight instances; Tasks 14 and 15 added five more, so **the
+count is thirteen**. Every one was caught only because a reviewer was told to
+look for it specifically. Keep doing that in every dispatch.
+
+- Task 14 — cherry-pick classification keyed on *any* non-zero exit, so a hard git
+  failure (exit 128) returned `OutcomeConflict` with a `nil` error, carrying the
+  **previous** change's conflicting paths.
+- Task 15 — the brief's `save` swallowed every `Store.Save` failure; since `Save`
+  also updates the index, that returned READY while `Get` reported CREATING forever.
+- Task 15 — the brief's panic recovery discarded `s.fail(...)` and returned a
+  **zero** session.
+- Task 15 — the brief's `trimSHA` could return `""` straight into the diff range.
+- Task 15 (C1, Critical) — `Build` held a stale session snapshot, so the terminal
+  guard checked the stale copy and **READY overwrote FINISHED**, with `Store.Save`
+  re-creating the just-deleted session directory. A discarded review reported READY
+  forever against a deleted worktree.
+
+**A newer, second failure mode worth its own attention: the silently
+non-discriminating test.** There are now four proven cases — Task 10's sort order,
+Task 14's empty outcome, Task 15's async test, and Task 15's own CAS atomicity
+test. The last one is the sharpest lesson: its mutation *did* reproduce, but only
+at `-count=300`, and passed **40/40** under `go test -race -count=1`, which is the
+command the project actually runs.
+
+**Rules that came out of this, and should stay in force:**
+
+- Require a mutation ratio (e.g. 10/10), not a single anecdotal failure, and
+  require it **under the project's own test command**.
+- Be most suspicious of a *silent pass*: round 2 of Task 15 left an assertion
+  textually intact but dead, and the test then passed with an effectively
+  unbounded semaphore at 0/10 detection.
+
+## 3a. Process notes
+
+- **The brief's sample code is wrong far more often than §2 implies.** It is now
+  **5 of 15 tasks** (2, 3, 10, 12, 13, plus three separate defects inside Task 15
+  alone). Every implementer dispatch should carry the instruction: follow the
+  prose and the tests, and *report* the conflict rather than silently choosing.
+- **`SendMessage` was unavailable again**, so R4 still applies: fix rounds use a
+  fresh implementer carrying the brief path, the report path, and the findings.
+- **Review packages should skip docs-only commits.** Task 14's range
+  `e18e8fe..e95bab5` was 305 KB, of which all but 16 KB was a docs commit. Package
+  the code commit only.
+- **A controller instruction can cause a regression.** Round 2's Critical came
+  from *my* instruction to replace a flaky sleep with a barrier: right intent
+  (kill the timing-dependent lower bound), but I did not require the replacement
+  to preserve the upper bound's discriminating power. When ordering a test
+  rewrite, state which assertion must keep its teeth and demand the mutation
+  ratio that proves it.
+
+## 4a. Rulings R25–R31
+
+- **R25** — Task 14's commit trailer must carry the provider id
+  (`Converge-Change: <provider-id>#<number>`). Not a PRD-vs-design conflict:
+  `prd.md:278-280` and `design.md:430` agree, and the *brief* contradicted both.
+  The brief's justification (that `session.ResolvedChange` has no provider field)
+  is true but non-dispositive — `Session.ProviderID()` has it and a session is
+  scoped to one provider. Widened `Apply` to take `providerID` rather than adding
+  a field to `ResolvedChange`, which would have touched Task 11's model, its
+  `session.json` persistence, and Task 13's construction sites. *Cost: one extra
+  parameter threaded through Task 15.*
+- **R26** — Amend **every** synthetic commit, not just the tip (`prd.md:278`
+  "Each synthetic commit", `design.md:429` "each new commit"), by cherry-picking
+  rebase SHAs **sequentially** with an amend after each. Also satisfies FR-6.4,
+  makes FR-6.6's "commit SHA being applied" exact rather than inferred, and
+  retired two minors. *Cost: N cherry-pick invocations instead of 1, on a path
+  already bounded at 250 commits.*
+- **R27** — Persistence and unclassified internal failures report as
+  `GIT_FAILURE`; **no `INTERNAL` code**. `design.md:494` already records a
+  recovered panic as `GIT_FAILURE`, and `INTERNAL` is absent from the
+  exact-string set that Task 19 and the frontend consume. *Cost: `GIT_FAILURE`'s
+  meaning widens slightly — a disk failure reads as a git failure — mitigated by
+  logging the real cause at Error.*
+- **R28** — The service **should** produce `session.ErrNotFound` (wrapped with
+  `%w`) in `Files`/`FileDiff`/`CombinedDiffPath`. This **overrode my own earlier
+  dispatch note**, which had wrongly told the implementer that Task 19 owned it;
+  the carried acceptance point meant Task 19 *maps* it to a 404, not that Task 19
+  must produce it. *Cost: none identified.*
+- **R29** — Do **not** widen `Deps` to interfaces; require the tests instead. The
+  implementer's premise (that concrete types blocked fault injection) was false —
+  `ChangeApplicator`, `gitx.Runner`/`FakeRunner` and `Deps.Now` are already
+  injectable, and the reviewer had driven those paths during review. Only
+  `Store.Save` failure needed anything special (`chmod 0500`). *Cost: if a later
+  task needs a fake `Store` or `Registry`, the change lands then, on evidence.*
+- **R30** — Close C1 **structurally** with a compare-and-swap in `session.Store`,
+  rather than accepting round 1's narrowed `Get`→`Save` window. A mitigation is
+  not a fix for a Critical. Landed as `Store.SaveActive`, checking indexed status
+  and doing the disk write under one acquisition of the existing mutex.
+  Constraint: **add a method, reorder nothing** — R18/R19 stay exactly as they
+  are (verified byte-identical by md5 twice since). *Cost: the terminal write path
+  serialises across sessions behind one small-JSON fsync, bounded by
+  `MAX_CONCURRENT_BUILDS`; and the plan's most delicate file was touched at fix
+  round 2 rather than deferred to Task 30.*
+- **R31** — `context.DeadlineExceeded` keeps the `INTERRUPTED` code but gets its
+  own message. `MsgInterrupted()` says "interrupted by a server restart", which is
+  false for a build that hit the 60-minute ceiling. Message-only, so the
+  exact-string code set is untouched. Rejected inventing a timeout code, per R27.
+  *Cost: one more user-facing string to translate later.*
+
+## 5a. New deferred minors (add to §5's list for Task 30)
+
+- `store.go` — `Store.onWriteRecord` is a production struct field that exists
+  only so a test can hook the write. Settable only from within the package, but
+  it is production surface serving a test.
+- `service_test.go` — `queuedOnSemaphore` detects parked goroutines by matching
+  **goroutine-dump text** (`[select` plus the top frame name `StartBuild.func1`).
+  It needs updating if `StartBuild`'s goroutine is renamed or the `select` moves.
+- Two timing-shaped tests remain in `service_test.go` (a 500 ms asynchrony budget
+  with a 3 s watchdog). Assessed low-risk, ~20 clean executions including
+  `GOMAXPROCS=1` and under concurrent load.
+- `classify` orders cancellation ahead of **all** classifications, so a CONFLICT
+  landing exactly at shutdown records as INTERRUPTED. Truthful, and the comment
+  now says so.
