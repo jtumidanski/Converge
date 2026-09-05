@@ -77,7 +77,17 @@ func NewRouter(d Deps) http.Handler {
 		_ = jsonapi.WriteError(w, http.StatusNotFound, "NOT_FOUND", jsonapi.StatusTitle(http.StatusNotFound), "No such endpoint.")
 	})
 	if d.UI != nil {
-		mux.Handle("GET /", uiHandler(d.UI, d.UIPresent))
+		// Registered without a method restriction ("/", not "GET /"): Go's
+		// ServeMux treats "/api/" and "GET /" as ambiguous for a GET request
+		// under /api/ (one pattern is more method-specific, the other more
+		// path-specific, so neither dominates) and panics at registration
+		// time. "/" carries no method restriction, so the only axis left is
+		// path specificity, where "/api/" -- being the longer literal
+		// prefix -- unambiguously wins for anything under /api/, leaving
+		// "/" to handle everything else. This was never exercised before
+		// Task 20's server binary, which is the first caller to pass a
+		// non-nil Deps.UI alongside the existing "/api/" catch-all.
+		mux.Handle("/", uiHandler(d.UI, d.UIPresent))
 	}
 	return withMiddleware(mux, d.Log)
 }
