@@ -1037,3 +1037,156 @@ it as a question to the reviewer, not as a finding.
 - **R46** — the missing `repositorySchema` test file, graded Minor, entered the
   fix loop. Its absence is precisely why the validation gap survived review.
   *Cost: one test file written earlier than policy would have.*
+
+---
+
+## 1f. Status (supersedes §1e) — end of session 6
+
+**26 of 30 tasks complete. PHASE F IS CLOSED — the frontend is done.**
+
+| Phase | Tasks | State |
+|---|---|---|
+| A–E | 1–20 | complete |
+| F — Frontend | 21–26 | **complete** |
+| G — Packaging, CI, docs | 27–30 | **not started** |
+
+| Task | Subject | Range | Outcome |
+|---|---|---|---|
+| 25 | Change selection view, routing | `dc1fc63..56574ad` | clean (1 fix round) |
+| 26 | Review page, file tree, diff | `56574ad..bcd888a` | clean (1 fix round) |
+
+### Exactly where to resume
+
+**The next action is Task 27** (Makefile targets, build scripts, Docker image,
+compose). Nothing is in flight; the tree is clean at `bcd888a`; no live agents.
+Dispatch from `.superpowers/sdd/plan/task-27-brief.md` using the
+`task-implementer` agent.
+
+**Re-read `git rev-parse HEAD` yourself rather than trusting the base recorded
+here.** This has bitten two prior sessions: docs commits land after a handoff
+section is written, so the ledger's last line is more current than this section
+by construction.
+
+Phase G is a different kind of work from A–F: build tooling, Docker, CI YAML and
+prose. The `frontend-guidelines-reviewer` and `backend-guidelines-reviewer`
+checklists mostly do not apply to tasks 27–29. Expect to dispatch a
+general-purpose reviewer with an explicitly-written constraints block for those,
+and save the guideline reviewers for Task 30's sweep.
+
+### The one ruling to read before touching anything
+
+**R54 — a reviewer's Critical was overturned, and the code it condemned is
+correct.** `ReviewHeader.tsx:21` renders `Base: <branch> @ <short SHA>` in the
+always-visible header. A reviewer graded this a Critical FR-10.11 violation. It
+is **spec-mandated**:
+
+- **FR-10.8** (`prd.md:370`) — *"Diff view header shows repository, base branch
+  @ short SHA, 'immediately before <number>', the included changes …"*
+- The PRD manual acceptance checklist (`prd.md:730`) — *"The resulting review
+  shows base branch @ SHA"*
+- **FR-10.11** (`prd.md:381-383`) bans only *"worktree, cherry-pick, or
+  synthetic branch"* outside Diagnostics. A SHA is not among them.
+- FR-10.7 *does* place base SHA inside Diagnostics — but governs the **error
+  panel**, a different surface. Conflating the two was the reviewer's error.
+
+**If a Task 30 reviewer raises this again, reject it and cite the above.** Do not
+let a late review "fix" the header into violating FR-10.8.
+
+### What this session confirms about the method
+
+- **Mandating mutations by name keeps finding blind tests.** Three consecutive
+  tasks, four gaps: Task 25's `checked={false}` killed 0 of 4 (Radix's
+  `onCheckedChange` fires regardless of the `checked` prop, so every selection
+  test passed against a checkbox that never rendered its state); Task 26's
+  auto-select and `CONFLICTED`-routing mutations each exposed a blind test.
+  Left to choose, implementers pick mutations they know are covered.
+- **A zero-kill mutation is a finding, not a failure.** Say so in the dispatch.
+  Task 26's colour mutation came back 0/12 and was correctly declared a coverage
+  gap on a purely visual change rather than having a test manufactured for it.
+- **Verify the clause, not the characterisation of it.** R54 was catchable only
+  by opening the PRD and reading FR-10.8, which sits one clause before the
+  FR-10.11 the finding cited. This is Task 24's lesson in reverse: there,
+  reading the PRD instead of the backend *code* left a gap; here, reading the
+  actual clause instead of a summary prevented a spec violation landing as a
+  "fix".
+- **Voice suspicions as questions to the reviewer.** Three have now been handed
+  over this way. Two came back wrong. The third — the untargeted first
+  `useChanges` request — came back a real Important defect. Both outcomes cost
+  one sentence in a dispatch.
+- **Prove structural claims structurally.** "The switch is exhaustive" read off
+  the code is exactly the claim that looks true and isn't. It was proven by
+  adding a seventh `ReviewStatus` member in a scratch copy and quoting the
+  compile error.
+- **Re-verify when a report's shape looks off.** The final re-review reported an
+  implausibly low tool-use count for the work it described. Every load-bearing
+  claim held, and the controller re-ran `tsc --noEmit` and the suite itself
+  anyway. Checking cost one command.
+
+### Environment traps (both bit someone this session)
+
+- **`npm run build` deletes the tracked `apps/backend/internal/ui/dist/.gitkeep`.**
+  It has now caught an implementer *and* a reviewer. Name it in every dispatch
+  that runs a frontend build, and check `git status --porcelain` before
+  concluding a task.
+- **Node is not on `PATH`.** Every frontend command needs
+  `export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 22` first.
+
+### Carried into Phase G
+
+- **`format:check` fails on 3 pre-existing files** that predate Phase F. Both
+  the implementer and reviewer disclosed this. Task 27–30 should decide whether
+  to format them; it is not Phase F debt.
+- **`FileDiff`'s `PatchDiff` path has no test** and cannot have one under jsdom
+  (missing `ResizeObserver`, shadow-DOM content) — independently reproduced
+  twice. Binary and truncated branches *are* tested. Record this in Task 30 as a
+  known coverage **boundary**, not a gap to close, unless a real-browser runner
+  is introduced.
+- **Four components share the error-vs-empty defect shape** and none has an
+  `error` prop: `RepositoryList`, `ProviderPicker`, `ChangeTable`, `FileTree`.
+  All are safe *only* by caller discipline — exhaustive ternaries in their
+  pages, which are now tested for `ReviewPage` but not for the others.
+  **Task 30 should decide for all four at once.** Also unreached: `ChangeTable`'s
+  empty-state branch. An untested empty state is how this class stays invisible.
+- **Twelve shadcn components under `src/components/ui/` may still be unused**
+  (R39). Task 30 should delete any that are.
+- **`ManualRepositoryForm` does not populate the React Query cache** (R45).
+- **The `{ items, page }` list shape carries `hasNext`, not a total** — no
+  surface can render "page N of M".
+
+### Rulings R47–R56
+
+- **R47** — replaced the brief's two `useEffect`+`setState` blocks with
+  render-derivation (`react-hooks/set-state-in-effect` is a lint error).
+  Verified the `edited` flag means clearing the base-branch input is not
+  clobbered by the repository default. *Cost: none.*
+- **R48** — `App.tsx` uses the sample's `QueryClientProvider > BrowserRouter`
+  over the Interfaces section's opposite order; neither consumes the other's
+  context. *Cost: none.*
+- **R49** — branch cell renders `source to target`, not an arrow. *Cost:
+  cosmetic.*
+- **R50** — gated `useChanges` on the repository lookup having **settled**
+  (`!repositoryQuery.isPending`), not succeeded. An `isSuccess` gate would leave
+  the table permanently empty after a repository-lookup failure — the defect
+  class. The mutant typechecks clean, so only the test catches it; it does.
+  *Cost: a settled-but-failed lookup fetches untargeted, the correct fallback
+  but a heavier request.*
+- **R51** — the `ReviewPage` placeholder comment, graded Minor, entered the fix
+  loop; Task 26 was the very next dispatch. *Cost: one comment line early.*
+- **R52** — `onFinish` and `onDiscard` both routing to one `useFinishReview` is
+  **correct**. Verified against the backend: `router.go:72` registers exactly one
+  `DELETE /api/reviews/{id}`, handled by `Service.Finish`. The brief *looked*
+  wrong and was right. *Cost: none.*
+- **R53** — no `useDiscardReview` hook; it would imply a distinction the API
+  does not make. *Cost: none.*
+- **R54** — **overturned a reviewer's Critical.** See above. *Cost: none; two
+  independent PRD clauses require exactly what shipped.*
+- **R55** — `FINISHED`/`EXPIRED` must not render the diff layout with a live
+  Finish Review button for a review whose workspace is already cleaned up. The
+  PRD is silent, so this is a gap ruled on rather than a clause applied.
+  Delivered as a terminal panel plus an `assertUnreachable` default making the
+  switch exhaustive. *Cost if wrong: a user landing on a FINISHED review sees a
+  terminal panel instead of a stale diff — the safer failure mode, since the
+  files no longer exist.*
+- **R56** — two hardcoded Tailwind colours, graded Minor, entered the fix loop:
+  this was the last frontend task, so no later frontend task would sweep them.
+  *Cost: two class-name changes early.*
