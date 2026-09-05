@@ -1190,3 +1190,142 @@ let a late review "fix" the header into violating FR-10.8.
 - **R56** — two hardcoded Tailwind colours, graded Minor, entered the fix loop:
   this was the last frontend task, so no later frontend task would sweep them.
   *Cost: two class-name changes early.*
+
+---
+
+# SESSION 7 UPDATE
+
+## 1g. Status (supersedes §1f) — end of session 7
+
+**29 of 30 tasks complete. Phase G is one task from done.**
+
+| Phase | Tasks | State |
+|---|---|---|
+| A–F | 1–26 | complete |
+| G — Packaging, CI, docs | 27–29 | **complete** |
+| G — Final verification | 30 | **not started** |
+
+| Task | Subject | Range | Outcome |
+|---|---|---|---|
+| 27 | Makefile, build scripts, Dockerfile, compose | `7046173..70b6859` | clean, **0 fix rounds** |
+| 28 | GitHub Actions + GitLab CI pipelines | `70b6859..96cc1c2` | clean after 1 fix round |
+| 29 | README, CLAUDE.md, manual checklist | `96cc1c2..f48cde6` | clean, **0 fix rounds** |
+
+### Exactly where to resume
+
+**The next and final action is Task 30** — full verification sweep plus the
+consolidated end-of-branch review. Nothing is in flight; the tree is clean at
+`f48cde6`; no live agents. The brief is at `.superpowers/sdd/plan/task-30-brief.md`.
+
+**Re-read `git rev-parse HEAD` yourself rather than trusting the SHA above.**
+This has now bitten three prior sessions: docs commits land after a handoff
+section is written, so the ledger's last line is always more current than this
+one by construction.
+
+Task 30 is different in kind from 1–29 and should be run differently:
+
+- It is the **only** task that runs the full trio via
+  `superpowers:requesting-code-review` — `plan-adherence-reviewer`,
+  `backend-guidelines-reviewer`, `frontend-guidelines-reviewer` — writing to
+  the consolidated **`audit.md`**, not `audit-task-30.md`. Every per-task audit
+  so far has deliberately kept `audit.md` free for exactly this.
+- It ends with `superpowers:finishing-a-development-branch`.
+- Per CLAUDE.md, the code-review step must run **before** any PR is opened. Do
+  not skip it because the plan looks complete.
+
+### The deferred-minor ledger Task 30 must actually work through
+
+These accumulated across Phases F and G and were each deferred *to Task 30 specifically*.
+Task 30 is the last chance; there is no later task.
+
+- **Four components share the error-vs-empty defect shape** and none has an
+  `error` prop: `RepositoryList`, `ProviderPicker`, `ChangeTable`, `FileTree`.
+  They are safe only by caller discipline — exhaustive ternaries in their pages,
+  tested for `ReviewPage` but not the others. **Decide for all four at once.**
+  Also unreached: `ChangeTable`'s empty-state branch.
+- **Twelve shadcn components under `src/components/ui/` may still be unused**
+  (R39). Delete any that are.
+- **`ManualRepositoryForm` does not populate the React Query cache** (R45).
+- **`FileDiff`'s `PatchDiff` path has no test** and cannot have one under jsdom
+  (missing `ResizeObserver`, shadow-DOM content) — independently reproduced
+  twice. Record as a known coverage **boundary**, not a gap to close.
+- **`make build` no longer runs a full-repo `go build ./...`** (Task 27); it
+  cross-compiles the two binaries. Coverage remains via the gate's own build step.
+- **Pinned GitHub Actions are 2–3 majors stale** though all verified to exist
+  live. A currency note, not a defect.
+- **README documents 7 of `make help`'s 11 targets**, omitting `help`,
+  `docker-push`, `release-github`, `clean`. Inherited from the brief's draft.
+- **`make dev` requires bash ≥ 5.1** (R57) — now documented in the README as a
+  prerequisite. Do not "fix" it into a bash-3.2-portable form; see R57.
+
+### Rulings R57–R59
+
+- **R57** — the bash ≥ 5.1 `wait -n <pids>` requirement in `make dev` is a
+  **documented prerequisite, not a code fix**. Rewriting it portably would
+  reintroduce the always-returns-0 bug that Task 27's Ruling 1 existed to fix.
+  The reviewer checked `prd.md`/`design.md` and found no supported-workstation-OS
+  clause, only that CI/deployment target Linux. *Cost if wrong: a macOS
+  developer's `make dev` errors visibly on an unsupported builtin rather than
+  silently misreporting a dead backend as success — the safe failure direction.*
+- **R58** — the **3 pre-existing Prettier failures stopped being deferred** and
+  were fixed inside Task 28. Task 28's deliverable is a `validate` job that runs
+  `make lint`, and `make lint` failed on those files; shipping CI that is red on
+  its first run teaches a team to ignore it, and neither Task 29 (docs) nor
+  Task 30 (verification) was a better home. *Cost: three files reformatted one
+  task earlier than policy.* Verified formatting-only, byte-identically.
+- **R59** — **Task 28's fix round was adjudicated by the controller directly
+  rather than by a scoped re-review**, breaking this branch's every-round-gets-a-
+  re-review habit. The whole change was a 6-line YAML permissions diff readable
+  in full, the load-bearing semantics were already settled against GitHub's live
+  docs, and `actionlint` was re-run to zero findings. *Cost if wrong: six lines
+  of YAML land without a second pair of eyes; Task 30's sweep still covers them.*
+
+### What this session confirms about the method
+
+- **Phase G's verification is execution, not mutation.** These tasks are Make,
+  Docker, shell, YAML and prose — there is nothing to mutate. The burden shifts
+  entirely to *did you run it*: the Task 27 reviewer built the image, ran the
+  container, proved uid 10001 and `/healthz`, and got `200` on `/` — which is
+  what actually proves the image embeds a real UI rather than an empty `dist`.
+  Two dispatches explicitly said "do not manufacture mutation testing for a
+  Makefile/YAML file", and neither agent did.
+- **Break it yourself.** Task 27's reviewer ran `build-backend.sh` with
+  `PLATFORMS=linux/bogusarch` and confirmed a non-zero abort. That is the
+  shell-shaped version of this branch's defect class, and reading `set -euo
+  pipefail` off the top of a file would not have proven it.
+- **Voicing suspicions as questions keeps paying, mostly by being wrong.** Two
+  more this session, both refuted: the GHCR-lowercasing "fix" I was tempted by
+  would have been *actively wrong* (dropping `IMAGE_REPOSITORY` makes
+  `docker-build` tag the literal `converge` while `docker-push` resolves the
+  GHCR path, so the push fails on a missing local image), and the "agreed
+  deviations" claim in `CLAUDE.md` traced to real prior rulings rather than
+  invented consensus. Five handed over in total across sessions; four refuted,
+  one a real defect. One sentence in a dispatch each time.
+- **The plan's own text was wrong an eighth time**, and this instance was a
+  *security* defect: the brief's sample workflow YAML (`task-28-brief.md:25-27`)
+  granted `contents: write` + `packages: write` at workflow level, so `validate`
+  — which triggers on `pull_request` and runs PR-controlled build tooling — held
+  write access it never used. A plan-mandated defect is still a defect.
+- **Check the highest-blast-radius artifact first.** Task 29 modified
+  `CLAUDE.md`, which every future session reads as authoritative. The first
+  thing checked was that it had not been rewritten (heading-set diff: intact),
+  and the added `Architecture Notes` section was then sent for bullet-by-bullet
+  verification. A false claim there misleads every future session; a wrong
+  README line misleads one reader.
+- **A clean negative is worth recording.** The `.env.example`-vs-parser check
+  (Task 27) and the three-way README/parser/`.env.example` diff (Task 29) both
+  found nothing. Reading the parser instead of the brief's list was still the
+  right method — the finding is that the method was applied, not that it fired.
+
+### Environment traps (unchanged, still live)
+
+- **`npm run build` deletes the tracked `apps/backend/internal/ui/dist/.gitkeep`.**
+  Name it in every dispatch that runs a frontend build.
+- **Node is not on `PATH`**: `export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 22`.
+- **The Bash tool's 120 s default silently backgrounds long commands** — pass an
+  explicit `timeout: 600000` on Go, `npm ci`/`npm run build`, and docker calls.
+- **The controller's own cwd does not reliably persist between Bash calls.** It
+  drifted once this session and a ledger append failed against a path that had
+  been correct one call earlier. Absolute-path or re-`cd` every call.
+- Verified available this session: docker 29.7.2, compose v5.5.0, go1.27.0,
+  bash 5.2.37, actionlint 1.7.7.
