@@ -1,0 +1,217 @@
+// Package app wires configuration into the collaborators both binaries need.
+package app
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/jtumidanski/converge/internal/config"
+	"github.com/jtumidanski/converge/internal/gitx"
+	"github.com/jtumidanski/converge/internal/mirror"
+	"github.com/jtumidanski/converge/internal/provider"
+	"github.com/jtumidanski/converge/internal/provider/github"
+	"github.com/jtumidanski/converge/internal/provider/gitlab"
+	"github.com/jtumidanski/converge/internal/review"
+	"github.com/jtumidanski/converge/internal/session"
+	"github.com/jtumidanski/converge/internal/workspace"
+)
+
+// MinGitVersion is required for `cherry-pick --empty=keep`.
+var MinGitVersion = "2.45"
+
+// App holds every wired collaborator.
+type App struct {
+	Config     config.Config
+	Log        *slog.Logger
+	Runner     *gitx.ExecRunner
+	Registry   *provider.Registry
+	Mirrors    *mirror.Cache
+	Workspaces *workspace.Manager
+	Store      *session.Store
+	Service    *review.Service
+}
+
+// Close releases the git runner's temporary directories.
+func (a *App) Close() error {
+	if a.Runner != nil {
+		return a.Runner.Close()
+	}
+	return nil
+}
+
+// redactingHandler scrubs configured secrets from every logged value.
+type redactingHandler struct {
+	inner   slog.Handler
+	secrets []string
+}
+
+func (h *redactingHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return h.inner.Enabled(ctx, l)
+}
+
+func (h *redactingHandler) Handle(ctx context.Context, r slog.Record) error {
+	clean := slog.NewRecord(r.Time, r.Level, h.scrubString(r.Message), r.PC)
+	r.Attrs(func(a slog.Attr) bool {
+		clean.AddAttrs(h.scrubAttr(a))
+		return true
+	})
+	return h.inner.Handle(ctx, clean)
+}
+
+func (h *redactingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	scrubbed := make([]slog.Attr, len(attrs))
+	for i, a := range attrs {
+		scrubbed[i] = h.scrubAttr(a)
+	}
+	return &redactingHandler{inner: h.inner.WithAttrs(scrubbed), secrets: h.secrets}
+}
+
+func (h *redactingHandler) WithGroup(name string) slog.Handler {
+	return &redactingHandler{inner: h.inner.WithGroup(name), secrets: h.secrets}
+}
+
+func (h *redactingHandler) scrubString(s string) string {
+	for _, secret := range h.secrets {
+		if secret != "" && strings.Contains(s, secret) {
+			s = strings.ReplaceAll(s, secret, "[redacted]")
+		}
+	}
+	return s
+}
+
+// scrubAttr recursively scrubs an attribute's value, descending into groups
+// (including groups produced by WithGroup/WithAttrs chains) so a secret
+// nested under any depth of grouping is still caught.
+func (h *redactingHandler) scrubAttr(a slog.Attr) slog.Attr {
+	v := a.Value.Resolve()
+	switch v.Kind() {
+	case slog.KindString:
+		return slog.String(a.Key, h.scrubString(v.String()))
+	case slog.KindGroup:
+		group := v.Group()
+		out := make([]any, 0, len(group))
+		for _, g := range group {
+			out = append(out, h.scrubAttr(g))
+		}
+		return slog.Group(a.Key, out...)
+	default:
+		return slog.Attr{Key: a.Key, Value: slog.StringValue(h.scrubString(v.String()))}
+	}
+}
+
+// NewLogger builds the configured handler wrapped in redaction.
+func NewLogger(w io.Writer, cfg config.Config) *slog.Logger {
+	opts := &slog.HandlerOptions{Level: cfg.LogLevel}
+	var base slog.Handler
+	if cfg.LogFormat == "json" {
+		base = slog.NewJSONHandler(w, opts)
+	} else {
+		base = slog.NewTextHandler(w, opts)
+	}
+	return slog.New(&redactingHandler{inner: base, secrets: cfg.Secrets()})
+}
+
+// checkGitVersion enforces MinGitVersion.
+func checkGitVersion(v string) error {
+	parse := func(s string) (int, int, error) {
+		parts := strings.Split(strings.TrimSpace(s), ".")
+		if len(parts) < 2 {
+			return 0, 0, fmt.Errorf("cannot parse git version %q", s)
+		}
+		major, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return 0, 0, fmt.Errorf("cannot parse git version %q", s)
+		}
+		minor, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return 0, 0, fmt.Errorf("cannot parse git version %q", s)
+		}
+		return major, minor, nil
+	}
+	gotMajor, gotMinor, err := parse(v)
+	if err != nil {
+		return err
+	}
+	wantMajor, wantMinor, _ := parse(MinGitVersion)
+	if gotMajor > wantMajor || (gotMajor == wantMajor && gotMinor >= wantMinor) {
+		return nil
+	}
+	return fmt.Errorf("git %s is required, found %s", MinGitVersion, v)
+}
+
+// New loads configuration and wires every collaborator.
+//
+// REPOSITORY_CACHE_ROOT is created here and passed directly into mirror.New
+// as its root argument, so the configured value -- not some internal
+// default -- is what mirror.Cache resolves every mirror path from.
+func New(ctx context.Context, env []string) (*App, error) {
+	cfg, err := config.Load(env)
+	if err != nil {
+		return nil, err
+	}
+	log := NewLogger(os.Stderr, cfg)
+	runner, err := gitx.NewExecRunner(log, gitx.Options{CloneTimeout: cfg.GitCloneTimeout, CommandTimeout: cfg.GitCommandTimeout, Secrets: cfg.Secrets()})
+	if err != nil {
+		return nil, err
+	}
+	version, err := runner.Version(ctx)
+	if err != nil {
+		_ = runner.Close()
+		return nil, fmt.Errorf("git is not usable: %w", err)
+	}
+	if err := checkGitVersion(version); err != nil {
+		_ = runner.Close()
+		return nil, err
+	}
+	if err := os.MkdirAll(cfg.RepositoryCacheRoot, 0o750); err != nil {
+		_ = runner.Close()
+		return nil, &config.Error{Variable: "REPOSITORY_CACHE_ROOT", Reason: "directory could not be created"}
+	}
+
+	httpClient := &http.Client{Timeout: cfg.ProviderTimeout}
+	registry := provider.NewRegistry()
+	for _, pc := range cfg.Providers {
+		var p provider.GitProvider
+		switch pc.Kind {
+		case config.KindGitHub:
+			p = github.New(pc.ID, pc.DisplayName, pc.BaseURL, pc.Token, httpClient, time.Now)
+		case config.KindGitLab:
+			p = gitlab.New(pc.ID, pc.DisplayName, pc.BaseURL, pc.Token, httpClient)
+		}
+		if err := registry.Register(p); err != nil {
+			_ = runner.Close()
+			return nil, err
+		}
+		log.Info("provider configured", slog.String("provider", pc.ID), slog.String("kind", string(pc.Kind)), slog.String("base_url", pc.BaseURL))
+	}
+
+	locks := &gitx.LockMap{}
+	// REPOSITORY_CACHE_ROOT flows straight from config into mirror.New: the
+	// cache never derives or defaults its own root.
+	mirrors := mirror.New(cfg.RepositoryCacheRoot, runner, locks, log)
+	workspaces, err := workspace.New(cfg.WorkspaceRoot, runner, locks, log)
+	if err != nil {
+		_ = runner.Close()
+		return nil, err
+	}
+	cleaner := review.NewCleaner(mirrors, workspaces, log)
+	store := session.NewStore(workspaces.Root(), cfg.SessionTTL, cleaner, log, time.Now)
+	service := review.NewService(review.Deps{
+		Providers: registry, Mirrors: mirrors, Workspaces: workspaces, Store: store,
+		Applicator: review.NewCherryPickApplicator(runner, log), Runner: runner, Log: log,
+		SessionTTL: cfg.SessionTTL, MaxConcurrentBuilds: cfg.MaxConcurrentBuilds, Now: time.Now,
+	})
+	if err := store.LoadAll(ctx); err != nil {
+		_ = runner.Close()
+		return nil, err
+	}
+	log.Info("converge starting", slog.String("git_version", version), slog.Int("providers", len(cfg.Providers)))
+	return &App{Config: cfg, Log: log, Runner: runner, Registry: registry, Mirrors: mirrors, Workspaces: workspaces, Store: store, Service: service}, nil
+}
