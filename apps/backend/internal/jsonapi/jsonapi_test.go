@@ -159,6 +159,9 @@ func TestDecodeRejectsOversizedBody(t *testing.T) {
 	if !asDecodeError(err, &de) {
 		t.Fatalf("err = %v, want *DecodeError", err)
 	}
+	if de.Detail != "The request body is too large." {
+		t.Fatalf("err.Detail = %q, want %q", de.Detail, "The request body is too large.")
+	}
 }
 
 func TestWriteOneWireFormatFieldNames(t *testing.T) {
