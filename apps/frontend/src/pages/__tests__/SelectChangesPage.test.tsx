@@ -118,4 +118,65 @@ describe("SelectChangesPage", () => {
     expect(await screen.findByText(/same base branch/i)).toBeInTheDocument();
     expect(navigate).not.toHaveBeenCalled();
   });
+
+  it("waits for the repository lookup to settle before requesting changes, and targets the default branch", async () => {
+    seed();
+    const changeRequests: (string | null)[] = [];
+    server.use(
+      http.get("/api/providers/gh/repositories/:repo/changes", ({ request }) => {
+        changeRequests.push(new URL(request.url).searchParams.get("target"));
+        return HttpResponse.json(listDoc([changeDoc(421, "Add field-state endpoint", "jsmith")], { number: 1, size: 30, hasNext: false }));
+      }),
+    );
+    renderWithProviders(<SelectChangesPage />, { route });
+    await screen.findByText("Add field-state endpoint");
+    expect(changeRequests).toHaveLength(1);
+    expect(changeRequests[0]).toBe("main");
+  });
+
+  it("still fetches and renders changes untargeted when the repository lookup fails", async () => {
+    server.use(
+      http.get("/api/providers/gh/repositories/:repo", () =>
+        HttpResponse.json({ errors: [{ status: "404", code: "NOT_FOUND", title: "Not Found" }] }, { status: 404 }),
+      ),
+      http.get("/api/providers/gh/repositories/:repo/changes", ({ request }) => {
+        expect(new URL(request.url).searchParams.get("target")).toBeNull();
+        return HttpResponse.json(listDoc([changeDoc(421, "Add field-state endpoint", "jsmith")], { number: 1, size: 30, hasNext: false }));
+      }),
+    );
+    renderWithProviders(<SelectChangesPage />, { route });
+    expect(await screen.findByText("Add field-state endpoint")).toBeInTheDocument();
+  });
+
+  it("shows a guidance banner instead of fetching when the provider or repository is missing from the URL", () => {
+    renderWithProviders(<SelectChangesPage />, { route: "/select?provider=gh" });
+    expect(screen.getByText(/missing selection/i)).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("wires Pagination to page state and gates Next on hasNext", async () => {
+    seed();
+    const pagesRequested: string[] = [];
+    server.use(
+      http.get("/api/providers/gh/repositories/:repo/changes", ({ request }) => {
+        const url = new URL(request.url);
+        pagesRequested.push(url.searchParams.get("page") ?? "1");
+        return HttpResponse.json(
+          listDoc([changeDoc(421, "Add field-state endpoint", "jsmith")], { number: 1, size: 30, hasNext: true }),
+        );
+      }),
+    );
+    renderWithProviders(<SelectChangesPage />, { route });
+    await screen.findByText("Add field-state endpoint");
+    const next = screen.getByRole("button", { name: /next/i });
+    expect(next).toBeEnabled();
+    await userEvent.click(next);
+    await waitFor(() => expect(pagesRequested).toContain("2"));
+    expect(screen.getByText(/page 2/i)).toBeInTheDocument();
+    const previous = screen.getByRole("button", { name: /previous/i });
+    expect(previous).toBeEnabled();
+    await userEvent.click(previous);
+    await waitFor(() => expect(screen.getByText(/page 1/i)).toBeInTheDocument());
+    expect(previous).toBeDisabled();
+  });
 });

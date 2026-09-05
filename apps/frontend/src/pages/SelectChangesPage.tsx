@@ -46,7 +46,12 @@ export function SelectChangesPage() {
 
   const selection = useSelection(`converge:selection:${providerId ?? ""}/${repository ?? ""}`);
   const changeParams: ChangeListParams = baseBranch ? { target: baseBranch, search, page } : { search, page };
-  const changes = useChanges(providerId, repository, changeParams);
+  // Wait for the repository lookup to settle (succeed or fail) before firing the
+  // changes request, so we never issue an unfiltered "all merged changes" request
+  // that gets immediately discarded once the default branch resolves. Gate on
+  // settled, not on success: if the lookup fails, baseBranch stays "" and changes
+  // must still be fetched untargeted — the user sees the repository error separately.
+  const changes = useChanges(providerId, repository, changeParams, !repositoryQuery.isPending);
   const createReview = useCreateReview();
 
   if (!providerId || !repository) {

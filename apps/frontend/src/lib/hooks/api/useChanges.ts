@@ -12,11 +12,12 @@ export function useChanges(
   providerId: string | undefined,
   repository: string | undefined,
   params: ChangeListParams,
+  enabled = true,
 ) {
   return useQuery({
     queryKey: changeKeys.list(providerId ?? "", repository ?? "", params),
     queryFn: () => changesService.list(providerId as string, repository as string, params),
-    enabled: Boolean(providerId) && Boolean(repository),
+    enabled: enabled && Boolean(providerId) && Boolean(repository),
     placeholderData: keepPreviousData,
     staleTime: 60_000,
   });
