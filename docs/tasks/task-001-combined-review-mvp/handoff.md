@@ -366,11 +366,11 @@ are done. Round 3's re-review came back NEEDS-WORK on one point, and **fix round
 was dispatched but its result was never recorded here** — the session ended at its
 context limit while it was in flight.
 
-**The next action is: confirm round 4 landed (check `git log` for a commit after
-`818a716`), then run its scoped re-review** — base `818a716`, head = round 4's
-commit, using `scripts/review-package`. Then Task 15 is complete.
+**Round 4 landed (`e6a8fb2`) and DOES NOT WORK. Task 15 needs a round 5.** This
+was measured, not inferred — see "Round 4 outcome" immediately below. Do **not**
+run a round-4 re-review; go straight to fixing.
 
-What round 4 was fixing, and what its re-review must check:
+What round 4 was trying to fix:
 
 > `TestServiceStartBuildRespectsMaxConcurrentBuilds` had a **dead assertion**.
 > Its watchdog (`service_test.go:406`) is armed *before* the deadline it races
@@ -386,9 +386,49 @@ What round 4 was fixing, and what its re-review must check:
 > ratios, each ≥10 runs under `go test -race -count=1`: broken matcher (must now
 > fail; currently 0/10) and removed semaphore bound (must stay 10/10).
 
+### Round 4 outcome — measured, and it failed
+
+Two implementers stalled on this round before one finally committed. **The reason
+was structural, not negligence: the broken-matcher mutation trips a 120-second
+watchdog, so a single run takes ~121s and the required 10 runs is a ~20-minute
+job no subagent turn can hold.** If you re-dispatch this, hand over the
+measurement as a background script, or reduce the watchdog for the measurement.
+
+**Two hazards this left behind — read before touching anything:**
+
+1. **Commit `e6a8fb2` shipped the mutation.** Its report claimed "both mutations
+   fully reverted"; that was false. Line 517 was committed as
+   `...StartBuild.func1_MUTATED_NOMATCH(`, i.e. the permanently blind test round 4
+   existed to prevent. **Already repaired** by commit `29cde86`, which restores
+   the real matcher. HEAD is clean; `e6a8fb2` retains it in history.
+2. An implementer believed stalled **resumed on its own and committed mid-run**
+   while controller-side verification was mutating the same files (ruling R7, in
+   its sharpest form). Never run mutation testing against the worktree while any
+   agent may be live — use a scratch copy outside the worktree, as the
+   re-reviewers do.
+
+**The clean measurement** (taken with no other agent live, matcher restored, gate
+green): baseline 3/3 PASS; **broken matcher, semaphore bound intact: 0/10 failed
+— the test still passes blind.** The `watchdogFired atomic.Bool` is correctly
+written but is never reached. The silent-pass hole is still open.
+
+**Concrete lead for round 5 — a hypothesis to test, not a conclusion.** The
+constants are `limit = 2`, `builds = 4`, so `builds-limit = 2`. If
+`queuedOnSemaphore()` really returned 0 under a broken matcher, the loop
+condition `got >= limit && queuedOnSemaphore() >= builds-limit` would stay false,
+the loop would run to the 120s watchdog, and the post-loop `t.Errorf` would fire —
+the fix *would* work. It doesn't, and the runs did not take 120s, so **the barrier
+is being opened early**. Most likely `queuedOnSemaphore` does not return 0 with a
+broken `waiting` string — e.g. it filters on `"[select"` and treats the frame-name
+check loosely enough that other parked selects still satisfy `>= 2`.
+
+**Start by unit-testing `queuedOnSemaphore` itself** against a known goroutine
+dump, with and without a matching frame name. A helper that silently over-counts
+is the actual defect; the watchdog is downstream of it.
+
 Round 3's re-review independently confirmed 10/10 mutation kills on all three of
 its items, and md5-verified the four R18/R19 functions byte-identical for the
-third time. So the only thing outstanding on Task 15 is the round-4 test fix.
+third time. Everything else in Task 15 is sound — this is the last open item.
 
 Once Task 15 closes, **the next action is Task 16**. Carry these into Task 16's
 dispatch:
