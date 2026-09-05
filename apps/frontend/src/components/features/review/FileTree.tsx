@@ -61,7 +61,7 @@ export function FileTree({ files, selectedPath, onSelect }: FileTreeProps) {
                       <Badge variant="outline" className="capitalize">
                         {status}
                       </Badge>
-                      <span className="text-xs text-emerald-600">+{additions}</span>
+                      <span className="text-xs text-muted-foreground">+{additions}</span>
                       <span className="text-xs text-destructive">−{deletions}</span>
                     </span>
                   </button>

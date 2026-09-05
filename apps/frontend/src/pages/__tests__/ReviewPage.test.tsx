@@ -204,6 +204,74 @@ describe("ReviewPage", () => {
     await waitFor(() => expect(navigate).toHaveBeenCalledWith("/"));
   });
 
+  it("shows an error banner, not an empty file tree, when the file list fails to load", async () => {
+    server.use(
+      http.get("/api/reviews/7f14b2c8", () => HttpResponse.json(reviewDoc("READY", null))),
+      http.get("/api/reviews/7f14b2c8/files", () =>
+        HttpResponse.json({ errors: [] }, { status: 500 }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />, { route: "/reviews/7f14b2c8" });
+    expect(await screen.findByText(/could not load the file list/i)).toBeInTheDocument();
+    // The empty-file-list affordance must not appear in place of the error.
+    expect(screen.queryByText(/no file changes/i)).not.toBeInTheDocument();
+  });
+
+  it("shows an error banner, not the diff view, when the review itself fails to load", async () => {
+    server.use(
+      http.get("/api/reviews/7f14b2c8", () => HttpResponse.json({ errors: [] }, { status: 500 })),
+    );
+    renderWithProviders(<ReviewPage />, { route: "/reviews/7f14b2c8" });
+    expect(await screen.findByText(/could not load this review/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /finish review/i })).not.toBeInTheDocument();
+  });
+
+  it("shows an error banner, not a stale diff, when a single file's diff fails to load", async () => {
+    server.use(
+      http.get("/api/reviews/7f14b2c8", () => HttpResponse.json(reviewDoc("READY", null))),
+      http.get("/api/reviews/7f14b2c8/files", () =>
+        HttpResponse.json(
+          listDoc([
+            oneDoc("review-files", "src/field/FieldService.java", {
+              path: "src/field/FieldService.java",
+              previousPath: "",
+              status: "modified",
+              additions: 40,
+              deletions: 12,
+              binary: false,
+            }).data,
+          ]),
+        ),
+      ),
+      http.get("/api/reviews/7f14b2c8/files/src/field/FieldService.java", () =>
+        HttpResponse.json({ errors: [] }, { status: 500 }),
+      ),
+    );
+    renderWithProviders(<ReviewPage />, { route: "/reviews/7f14b2c8" });
+    expect(await screen.findByText(/could not load this file's diff/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument();
+  });
+
+  it("renders a terminal panel, not the diff layout or Finish Review, for a finished review", async () => {
+    server.use(
+      http.get("/api/reviews/7f14b2c8", () => HttpResponse.json(reviewDoc("FINISHED", null))),
+    );
+    renderWithProviders(<ReviewPage />, { route: "/reviews/7f14b2c8" });
+    expect(await screen.findByText(/no longer available/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /finish review/i })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /start a new review/i }));
+    expect(navigate).toHaveBeenCalledWith("/");
+  });
+
+  it("renders a terminal panel, not the diff layout or Finish Review, for an expired review", async () => {
+    server.use(
+      http.get("/api/reviews/7f14b2c8", () => HttpResponse.json(reviewDoc("EXPIRED", null))),
+    );
+    renderWithProviders(<ReviewPage />, { route: "/reviews/7f14b2c8" });
+    expect(await screen.findByText(/no longer available/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /finish review/i })).not.toBeInTheDocument();
+  });
+
   it("renders the error panel, not the diff layout, for a conflicted review", async () => {
     server.use(
       http.get("/api/reviews/7f14b2c8", () => {

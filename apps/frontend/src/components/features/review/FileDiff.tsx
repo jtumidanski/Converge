@@ -21,7 +21,7 @@ export function FileDiff({ file }: FileDiffProps) {
   return (
     <div className="flex flex-col gap-2">
       {truncated ? (
-        <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-sm text-foreground">
+        <p className="rounded-md border border-border bg-muted p-2 text-sm text-muted-foreground">
           This file is too large to display in full. Showing the first part of the change.
         </p>
       ) : null}

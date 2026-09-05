@@ -12,4 +12,7 @@ export const strings = {
   discardReview: "Discard Review",
   buildReview: "Build Review",
   diagnostics: "Diagnostics",
+  reviewUnavailableTitle: "This review is no longer available",
+  reviewUnavailableDescription: "Start a new review to continue.",
+  startNewReview: "Start a new review",
 } as const;
