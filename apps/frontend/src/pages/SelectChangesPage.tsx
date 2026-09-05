@@ -39,13 +39,17 @@ export function SelectChangesPage() {
   // Seed baseBranch from the repository's default once it loads, without
   // setState-in-effect: derive it during render, per useSelection.ts and
   // SelectRepositoryPage.tsx's precedent.
-  const baseBranch = baseBranchState.edited ? baseBranchState.value : (defaultBranch ?? baseBranchState.value);
+  const baseBranch = baseBranchState.edited
+    ? baseBranchState.value
+    : (defaultBranch ?? baseBranchState.value);
   if (!baseBranchState.edited && defaultBranch && defaultBranch !== baseBranchState.value) {
     setBaseBranchState({ edited: false, value: defaultBranch });
   }
 
   const selection = useSelection(`converge:selection:${providerId ?? ""}/${repository ?? ""}`);
-  const changeParams: ChangeListParams = baseBranch ? { target: baseBranch, search, page } : { search, page };
+  const changeParams: ChangeListParams = baseBranch
+    ? { target: baseBranch, search, page }
+    : { search, page };
   // Wait for the repository lookup to settle (succeed or fail) before firing the
   // changes request, so we never issue an unfiltered "all merged changes" request
   // that gets immediately discarded once the default branch resolves. Gate on
@@ -57,7 +61,10 @@ export function SelectChangesPage() {
   if (!providerId || !repository) {
     return (
       <div className="mx-auto max-w-5xl p-6">
-        <ErrorBanner title="Missing selection" detail="Go back and choose a provider and repository." />
+        <ErrorBanner
+          title="Missing selection"
+          detail="Go back and choose a provider and repository."
+        />
       </div>
     );
   }
@@ -66,8 +73,17 @@ export function SelectChangesPage() {
     setCreateError(null);
     try {
       const request: CreateReviewRequest = baseBranch
-        ? { provider: providerId as string, repository: repository as string, baseBranch, changes: selection.numbers }
-        : { provider: providerId as string, repository: repository as string, changes: selection.numbers };
+        ? {
+            provider: providerId as string,
+            repository: repository as string,
+            baseBranch,
+            changes: selection.numbers,
+          }
+        : {
+            provider: providerId as string,
+            repository: repository as string,
+            changes: selection.numbers,
+          };
       const review = await createReview.mutateAsync(request);
       selection.clear();
       navigate(`/reviews/${review.id}`);

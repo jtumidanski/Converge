@@ -1,6 +1,13 @@
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { EmptyState } from "@/components/common/EmptyState";
 import { shortSha, type Change } from "@/types/models/change";
 
@@ -26,7 +33,12 @@ export function ChangeTable({ changes, loading, isSelected, onToggle }: ChangeTa
     );
   }
   if (changes.length === 0) {
-    return <EmptyState title="No merged PRs/MRs" description="Nothing matches this base branch and search." />;
+    return (
+      <EmptyState
+        title="No merged PRs/MRs"
+        description="Nothing matches this base branch and search."
+      />
+    );
   }
   return (
     <Table>
@@ -43,7 +55,8 @@ export function ChangeTable({ changes, loading, isSelected, onToggle }: ChangeTa
       </TableHeader>
       <TableBody>
         {changes.map((change) => {
-          const { number, title, author, mergedAt, sourceBranch, targetBranch, landingSha } = change.attributes;
+          const { number, title, author, mergedAt, sourceBranch, targetBranch, landingSha } =
+            change.attributes;
           return (
             <TableRow key={change.id}>
               <TableCell>
@@ -60,7 +73,9 @@ export function ChangeTable({ changes, loading, isSelected, onToggle }: ChangeTa
               <TableCell className="text-muted-foreground">
                 {sourceBranch} to {targetBranch}
               </TableCell>
-              <TableCell className="font-mono text-xs text-muted-foreground">{shortSha(landingSha)}</TableCell>
+              <TableCell className="font-mono text-xs text-muted-foreground">
+                {shortSha(landingSha)}
+              </TableCell>
             </TableRow>
           );
         })}

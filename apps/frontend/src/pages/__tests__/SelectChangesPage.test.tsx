@@ -33,10 +33,22 @@ function changeDoc(number: number, title: string, author: string) {
   }).data;
 }
 
-function seed(changes = [changeDoc(421, "Add field-state endpoint", "jsmith"), changeDoc(427, "Fix typo", "mkay")]) {
+function seed(
+  changes = [
+    changeDoc(421, "Add field-state endpoint", "jsmith"),
+    changeDoc(427, "Fix typo", "mkay"),
+  ],
+) {
   server.use(
     http.get("/api/providers/gh/repositories/:repo", () =>
-      HttpResponse.json(oneDoc("repositories", "atlas/server", { name: "server", namespace: "atlas", defaultBranch: "main", webUrl: "u" })),
+      HttpResponse.json(
+        oneDoc("repositories", "atlas/server", {
+          name: "server",
+          namespace: "atlas",
+          defaultBranch: "main",
+          webUrl: "u",
+        }),
+      ),
     ),
     http.get("/api/providers/gh/repositories/:repo/changes", ({ request }) => {
       const search = new URL(request.url).searchParams.get("search") ?? "";
@@ -79,7 +91,9 @@ describe("SelectChangesPage", () => {
     expect(screen.getByText(/1 selected/i)).toBeInTheDocument();
     expect(firstCheckbox).toHaveAttribute("aria-checked", "true");
     await userEvent.type(screen.getByPlaceholderText(/search/i), "typo");
-    await waitFor(() => expect(screen.queryByText("Add field-state endpoint")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByText("Add field-state endpoint")).not.toBeInTheDocument(),
+    );
     expect(screen.getByText(/1 selected/i)).toBeInTheDocument();
     expect(build).toBeEnabled();
   });
@@ -88,10 +102,14 @@ describe("SelectChangesPage", () => {
     seed();
     server.use(
       http.post("/api/reviews", async ({ request }) => {
-        const body = (await request.json()) as { data: { attributes: { changes: number[]; baseBranch: string } } };
+        const body = (await request.json()) as {
+          data: { attributes: { changes: number[]; baseBranch: string } };
+        };
         expect(body.data.attributes.changes).toEqual([421]);
         expect(body.data.attributes.baseBranch).toBe("main");
-        return HttpResponse.json(oneDoc("reviews", "7f14b2c8", { status: "CREATING" }), { status: 202 });
+        return HttpResponse.json(oneDoc("reviews", "7f14b2c8", { status: "CREATING" }), {
+          status: 202,
+        });
       }),
     );
     renderWithProviders(<SelectChangesPage />, { route });
@@ -106,7 +124,16 @@ describe("SelectChangesPage", () => {
     server.use(
       http.post("/api/reviews", () =>
         HttpResponse.json(
-          { errors: [{ status: "400", code: "INCOMPATIBLE_TARGETS", title: "Bad Request", detail: "All selected PRs/MRs must target the same base branch." }] },
+          {
+            errors: [
+              {
+                status: "400",
+                code: "INCOMPATIBLE_TARGETS",
+                title: "Bad Request",
+                detail: "All selected PRs/MRs must target the same base branch.",
+              },
+            ],
+          },
           { status: 400 },
         ),
       ),
@@ -125,7 +152,13 @@ describe("SelectChangesPage", () => {
     server.use(
       http.get("/api/providers/gh/repositories/:repo/changes", ({ request }) => {
         changeRequests.push(new URL(request.url).searchParams.get("target"));
-        return HttpResponse.json(listDoc([changeDoc(421, "Add field-state endpoint", "jsmith")], { number: 1, size: 30, hasNext: false }));
+        return HttpResponse.json(
+          listDoc([changeDoc(421, "Add field-state endpoint", "jsmith")], {
+            number: 1,
+            size: 30,
+            hasNext: false,
+          }),
+        );
       }),
     );
     renderWithProviders(<SelectChangesPage />, { route });
@@ -137,11 +170,20 @@ describe("SelectChangesPage", () => {
   it("still fetches and renders changes untargeted when the repository lookup fails", async () => {
     server.use(
       http.get("/api/providers/gh/repositories/:repo", () =>
-        HttpResponse.json({ errors: [{ status: "404", code: "NOT_FOUND", title: "Not Found" }] }, { status: 404 }),
+        HttpResponse.json(
+          { errors: [{ status: "404", code: "NOT_FOUND", title: "Not Found" }] },
+          { status: 404 },
+        ),
       ),
       http.get("/api/providers/gh/repositories/:repo/changes", ({ request }) => {
         expect(new URL(request.url).searchParams.get("target")).toBeNull();
-        return HttpResponse.json(listDoc([changeDoc(421, "Add field-state endpoint", "jsmith")], { number: 1, size: 30, hasNext: false }));
+        return HttpResponse.json(
+          listDoc([changeDoc(421, "Add field-state endpoint", "jsmith")], {
+            number: 1,
+            size: 30,
+            hasNext: false,
+          }),
+        );
       }),
     );
     renderWithProviders(<SelectChangesPage />, { route });
@@ -162,7 +204,11 @@ describe("SelectChangesPage", () => {
         const url = new URL(request.url);
         pagesRequested.push(url.searchParams.get("page") ?? "1");
         return HttpResponse.json(
-          listDoc([changeDoc(421, "Add field-state endpoint", "jsmith")], { number: 1, size: 30, hasNext: true }),
+          listDoc([changeDoc(421, "Add field-state endpoint", "jsmith")], {
+            number: 1,
+            size: 30,
+            hasNext: true,
+          }),
         );
       }),
     );
