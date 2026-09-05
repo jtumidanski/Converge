@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -403,7 +404,16 @@ func TestServiceStartBuildRespectsMaxConcurrentBuilds(t *testing.T) {
 			return false
 		}
 	}
-	watchdog := time.AfterFunc(120*time.Second, open)
+	// watchdogFired records that the watchdog itself opened the barrier,
+	// rather than the deadline loop below observing the expected
+	// queued/entered condition or the "all builds entered" hook. If the
+	// watchdog fires, the test did not observe what it set out to prove and
+	// must fail loudly instead of relying on peak == limit to catch it.
+	var watchdogFired atomic.Bool
+	watchdog := time.AfterFunc(120*time.Second, func() {
+		watchdogFired.Store(true)
+		open()
+	})
 	defer watchdog.Stop()
 	f.app.set(func(context.Context, session.ResolvedChange) {
 		mu.Lock()
@@ -455,6 +465,17 @@ func TestServiceStartBuildRespectsMaxConcurrentBuilds(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+	// If the watchdog opened the barrier, the loop above never observed the
+	// expected "queued on semaphore" condition (or the "all builds entered"
+	// hook) within the deadline. That is a real failure and must not be
+	// allowed to silently pass through the peak assertions below.
+	if watchdogFired.Load() {
+		mu.Lock()
+		got := entered
+		mu.Unlock()
+		t.Errorf("watchdog opened the barrier: %d builds reached Apply and %d are parked on the semaphore, want %d + %d",
+			got, queuedOnSemaphore(), limit, builds-limit)
+	}
 
 	for _, id := range ids {
 		if got := f.awaitTerminal(t, id, 120*time.Second); got.Status() != session.StatusReady {
@@ -493,7 +514,7 @@ func queuedOnSemaphore() int {
 		}
 		buf = make([]byte, 2*len(buf))
 	}
-	const waiting = "internal/review.(*Service).StartBuild.func1("
+	const waiting = "internal/review.(*Service).StartBuild.func1_MUTATED_NOMATCH("
 	count := 0
 	for _, g := range strings.Split(string(buf), "\n\n") {
 		lines := strings.Split(g, "\n")
