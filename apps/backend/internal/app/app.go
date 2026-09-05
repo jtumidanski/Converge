@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -106,6 +107,21 @@ func (h *redactingHandler) scrubAttr(a slog.Attr) slog.Attr {
 	}
 }
 
+// loggableURL strips embedded userinfo (e.g. "https://user:pw@host") from a
+// provider base URL before it is logged. config.Config.Secrets() only
+// collects provider tokens, so a password embedded in BASE_URL's userinfo is
+// never seen by the redacting handler and would otherwise reach the log in
+// clear. If the URL does not even parse, nothing is logged rather than
+// risking an unparsed credential leaking through verbatim.
+func loggableURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	u.User = nil
+	return u.String()
+}
+
 // NewLogger builds the configured handler wrapped in redaction.
 func NewLogger(w io.Writer, cfg config.Config) *slog.Logger {
 	opts := &slog.HandlerOptions{Level: cfg.LogLevel}
@@ -120,19 +136,19 @@ func NewLogger(w io.Writer, cfg config.Config) *slog.Logger {
 
 // checkGitVersion enforces MinGitVersion.
 func checkGitVersion(v string) error {
+	// parse only rejects outright unparseable shapes (no dot-separated
+	// major/minor at all). A non-numeric part parses to 0 via strconv.Atoi's
+	// zero value, which the accept/reject comparison below already rejects
+	// as "too old" -- so there is nothing a separate Atoi-error branch would
+	// add here that isn't already covered by that comparison, and duplicating
+	// it produced two error returns neither test could actually distinguish.
 	parse := func(s string) (int, int, error) {
 		parts := strings.Split(strings.TrimSpace(s), ".")
 		if len(parts) < 2 {
 			return 0, 0, fmt.Errorf("cannot parse git version %q", s)
 		}
-		major, err := strconv.Atoi(parts[0])
-		if err != nil {
-			return 0, 0, fmt.Errorf("cannot parse git version %q", s)
-		}
-		minor, err := strconv.Atoi(parts[1])
-		if err != nil {
-			return 0, 0, fmt.Errorf("cannot parse git version %q", s)
-		}
+		major, _ := strconv.Atoi(parts[0])
+		minor, _ := strconv.Atoi(parts[1])
 		return major, minor, nil
 	}
 	gotMajor, gotMinor, err := parse(v)
@@ -174,6 +190,10 @@ func New(ctx context.Context, env []string) (*App, error) {
 		_ = runner.Close()
 		return nil, &config.Error{Variable: "REPOSITORY_CACHE_ROOT", Reason: "directory could not be created"}
 	}
+	if err := os.MkdirAll(cfg.WorkspaceRoot, 0o750); err != nil {
+		_ = runner.Close()
+		return nil, &config.Error{Variable: "WORKSPACE_ROOT", Reason: "directory could not be created"}
+	}
 
 	httpClient := &http.Client{Timeout: cfg.ProviderTimeout}
 	registry := provider.NewRegistry()
@@ -189,7 +209,7 @@ func New(ctx context.Context, env []string) (*App, error) {
 			_ = runner.Close()
 			return nil, err
 		}
-		log.Info("provider configured", slog.String("provider", pc.ID), slog.String("kind", string(pc.Kind)), slog.String("base_url", pc.BaseURL))
+		log.Info("provider configured", slog.String("provider", pc.ID), slog.String("kind", string(pc.Kind)), slog.String("base_url", loggableURL(pc.BaseURL)))
 	}
 
 	locks := &gitx.LockMap{}
