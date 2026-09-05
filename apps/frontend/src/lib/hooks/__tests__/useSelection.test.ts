@@ -56,4 +56,23 @@ describe("useSelection", () => {
     const other = renderHook(() => useSelection("converge:selection:gh/atlas/server"));
     expect(other.result.current.count).toBe(0);
   });
+
+  it("re-derives selection when storageKey changes on an already-mounted instance", () => {
+    const keyA = "converge:selection:gh/atlas/server";
+    const keyB = "converge:selection:gh/other";
+    sessionStorage.setItem(keyB, JSON.stringify([change(9)]));
+
+    const { result, rerender } = renderHook(({ key }) => useSelection(key), {
+      initialProps: { key: keyA },
+    });
+    act(() => result.current.toggle(change(427)));
+    expect(result.current.numbers).toEqual([427]);
+
+    rerender({ key: keyB });
+    expect(result.current.numbers).toEqual([9]);
+    expect(result.current.count).toBe(1);
+
+    rerender({ key: keyA });
+    expect(result.current.numbers).toEqual([427]);
+  });
 });

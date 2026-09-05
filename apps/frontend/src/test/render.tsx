@@ -3,18 +3,32 @@ import { render, type RenderResult } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 
-function testClient(): QueryClient {
+function testClient(gcTime = 0): QueryClient {
   return new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+    defaultOptions: { queries: { retry: false, gcTime }, mutations: { retry: false } },
   });
 }
 
-/** queryWrapper wraps hooks under test in a QueryClientProvider. */
-export function queryWrapper() {
-  const client = testClient();
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
-  };
+/** A wrapper component that also exposes the QueryClient it renders, so tests can inspect cache state. */
+export interface QueryWrapper {
+  (props: { children: ReactNode }): ReactElement;
+  client: QueryClient;
+}
+
+/**
+ * queryWrapper wraps hooks under test in a QueryClientProvider.
+ *
+ * Pass `gcTime: Infinity` when a test needs to inspect cache state (e.g. `isInvalidated`)
+ * after a mutation settles, since the default `gcTime: 0` garbage-collects inactive
+ * queries almost immediately.
+ */
+export function queryWrapper(options: { gcTime?: number } = {}): QueryWrapper {
+  const client = testClient(options.gcTime ?? 0);
+  const Wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  Wrapper.client = client;
+  return Wrapper;
 }
 
 /** renderWithProviders renders a component with router and query providers. */
