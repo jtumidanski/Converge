@@ -75,6 +75,13 @@ func NewService(d Deps) *Service {
 // Get returns a session by ID.
 func (s *Service) Get(id string) (session.Session, bool) { return s.deps.Store.Get(id) }
 
+// Corrupted reports whether id was recorded, at the store's most recent
+// LoadAll, as having an unreadable or invalid session.json — see
+// session.Store.Corrupted. A caller whose Get(id) just returned false uses
+// this to tell "id never existed" (404) apart from "id existed but its
+// record could not be read" (500), per session.Store's documented contract.
+func (s *Service) Corrupted(id string) bool { return s.deps.Store.Corrupted(id) }
+
 // List returns active sessions, newest first.
 func (s *Service) List() []session.Session { return s.deps.Store.List() }
 

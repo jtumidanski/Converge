@@ -8,11 +8,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jtumidanski/converge/internal/gitx"
+	"github.com/jtumidanski/converge/internal/jsonapi"
 	"github.com/jtumidanski/converge/internal/mirror"
 	"github.com/jtumidanski/converge/internal/provider"
 	"github.com/jtumidanski/converge/internal/provider/fake"
@@ -21,6 +24,8 @@ import (
 	"github.com/jtumidanski/converge/internal/testutil"
 	"github.com/jtumidanski/converge/internal/workspace"
 )
+
+var fortyHex = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -31,6 +36,12 @@ type apiFixture struct {
 	svc     *review.Service
 	prov    *fake.Provider
 	src     *testutil.Repo
+	store   *session.Store
+	// base is main's HEAD before the squash merge landed, i.e. the commit the
+	// review's baseSha must resolve to. sq is the squash commit's SHA, i.e.
+	// the change's landingSha.
+	base string
+	sq   string
 }
 
 func newAPIFixture(t *testing.T) *apiFixture {
@@ -39,6 +50,7 @@ func newAPIFixture(t *testing.T) *apiFixture {
 	src.Branch("feat/a")
 	c := src.Commit("a.txt", "a\n", "a1")
 	src.Checkout("main")
+	base := src.Head()
 	sq := src.Squash("feat/a", "squash a")
 	src.Push()
 
@@ -81,7 +93,7 @@ func newAPIFixture(t *testing.T) *apiFixture {
 		SessionTTL: 24 * time.Hour, MaxConcurrentBuilds: 2, Now: time.Now,
 	})
 	h := NewRouter(Deps{Service: svc, Providers: registry, Log: log})
-	return &apiFixture{handler: h, svc: svc, prov: p, src: src}
+	return &apiFixture{handler: h, svc: svc, prov: p, src: src, store: store, base: base, sq: sq}
 }
 
 func do(t *testing.T, h http.Handler, method, target string, body string) *httptest.ResponseRecorder {
@@ -107,6 +119,21 @@ func decodeList(t *testing.T, w *httptest.ResponseRecorder) []map[string]any {
 		t.Fatalf("decode %s: %v", w.Body.String(), err)
 	}
 	return doc.Data
+}
+
+// assertErrorCode decodes a JSON:API error document and fails the test
+// unless it carries exactly one error with the given code.
+func assertErrorCode(t *testing.T, w *httptest.ResponseRecorder, code string) {
+	t.Helper()
+	var doc struct {
+		Errors []struct{ Code string } `json:"errors"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decode error doc %s: %v", w.Body.String(), err)
+	}
+	if len(doc.Errors) != 1 || doc.Errors[0].Code != code {
+		t.Errorf("errors = %s, want code %s", w.Body.String(), code)
+	}
 }
 
 func decodeOne(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
@@ -166,7 +193,9 @@ func TestRepositoriesAndChanges(t *testing.T) {
 		t.Fatalf("get repo: %d %s", w.Code, w.Body.String())
 	}
 	one := decodeOne(t, w)
-	if one["id"] != "atlas/server" || one["attributes"].(map[string]any)["defaultBranch"] != "main" {
+	repoAttrs := one["attributes"].(map[string]any)
+	if one["id"] != "atlas/server" || repoAttrs["defaultBranch"] != "main" || repoAttrs["name"] != "server" ||
+		repoAttrs["namespace"] != "atlas" || repoAttrs["webUrl"] != "https://example.test/atlas/server" {
 		t.Errorf("repo = %v", one)
 	}
 	w = do(t, f.handler, http.MethodGet, "/api/providers/fake/repositories/"+url.PathEscape("atlas/missing"), "")
@@ -177,6 +206,7 @@ func TestRepositoriesAndChanges(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Errorf("unknown provider: %d", w.Code)
 	}
+	assertErrorCode(t, w, "NOT_FOUND")
 	// changes
 	w = do(t, f.handler, http.MethodGet, "/api/providers/fake/repositories/"+url.PathEscape("atlas/server")+"/changes?state=merged&target=main", "")
 	if w.Code != http.StatusOK {
@@ -187,18 +217,36 @@ func TestRepositoriesAndChanges(t *testing.T) {
 		t.Fatalf("changes = %v", data)
 	}
 	attrs := data[0]["attributes"].(map[string]any)
-	for _, key := range []string{"number", "title", "author", "sourceBranch", "targetBranch", "mergedAt", "webUrl", "landingSha"} {
-		if _, ok := attrs[key]; !ok {
-			t.Errorf("attribute %s missing: %v", key, attrs)
-		}
+	if attrs["number"] != float64(421) || attrs["title"] != "Add a" || attrs["author"] != "jsmith" ||
+		attrs["sourceBranch"] != "feat/a" || attrs["targetBranch"] != "main" ||
+		attrs["webUrl"] != "https://example.test/mr/421" || attrs["landingSha"] != f.sq {
+		t.Errorf("attributes = %v (want landingSha=%s)", attrs, f.sq)
+	}
+	if v, ok := attrs["mergedAt"]; !ok || v == nil || v == "" {
+		t.Errorf("mergedAt missing or empty: %v", attrs)
 	}
 	w = do(t, f.handler, http.MethodGet, "/api/providers/fake/repositories/"+url.PathEscape("atlas/server")+"/changes?state=open", "")
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("state=open: %d", w.Code)
 	}
-	w = do(t, f.handler, http.MethodGet, "/api/providers/fake/repositories/"+url.PathEscape("atlas/server")+"/changes?target=main&pageSize=500", "")
+	assertErrorCode(t, w, "INVALID_STATE")
+	w = do(t, f.handler, http.MethodGet, "/api/providers/fake/repositories/"+url.PathEscape("atlas/server")+"/changes?target=main&pageSize=500&page=2", "")
 	if w.Code != http.StatusOK {
 		t.Errorf("pageSize clamp: %d %s", w.Code, w.Body.String())
+	}
+	var pageDoc struct {
+		Meta struct {
+			Page struct {
+				Number int `json:"number"`
+				Size   int `json:"size"`
+			} `json:"page"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &pageDoc); err != nil {
+		t.Fatal(err)
+	}
+	if pageDoc.Meta.Page.Size != 100 || pageDoc.Meta.Page.Number != 2 {
+		t.Errorf("meta.page = %+v, want size=100 (clamped from 500) number=2", pageDoc.Meta.Page)
 	}
 }
 
@@ -235,13 +283,39 @@ func TestReviewLifecycleEndpoints(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	attrs := final["attributes"].(map[string]any)
-	for _, key := range []string{"baseSha", "headSha", "baseDescription", "included", "totals"} {
-		if _, ok := attrs[key]; !ok {
-			t.Errorf("attribute %s missing: %v", key, attrs)
-		}
+	if attrs["baseSha"] != f.base {
+		t.Errorf("baseSha = %v, want %s", attrs["baseSha"], f.base)
 	}
-	if rel, ok := final["relationships"].(map[string]any); !ok || rel["files"] == nil {
-		t.Errorf("relationships = %v", final["relationships"])
+	if headSHA, ok := attrs["headSha"].(string); !ok || !fortyHex.MatchString(headSHA) {
+		t.Errorf("headSha = %v, want a 40-hex sha", attrs["headSha"])
+	}
+	if attrs["baseDescription"] != "Immediately before #421" {
+		t.Errorf("baseDescription = %v", attrs["baseDescription"])
+	}
+	totals, ok := attrs["totals"].(map[string]any)
+	if !ok || totals["files"] != float64(1) || totals["additions"] != float64(1) || totals["deletions"] != float64(0) {
+		t.Errorf("totals = %v", attrs["totals"])
+	}
+	included, ok := attrs["included"].([]any)
+	if !ok || len(included) != 1 {
+		t.Fatalf("included = %v", attrs["included"])
+	}
+	inc := included[0].(map[string]any)
+	if inc["number"] != float64(421) || inc["title"] != "Add a" || inc["author"] != "jsmith" ||
+		inc["strategy"] != "squash" || inc["webUrl"] != "https://example.test/mr/421" {
+		t.Errorf("included[0] = %v", inc)
+	}
+	rel, ok := final["relationships"].(map[string]any)
+	if !ok {
+		t.Fatalf("relationships = %v", final["relationships"])
+	}
+	filesRel, ok := rel["files"].(map[string]any)
+	if !ok {
+		t.Fatalf("relationships.files = %v", rel["files"])
+	}
+	links, ok := filesRel["links"].(map[string]any)
+	if !ok || links["related"] != "/api/reviews/"+id+"/files" {
+		t.Errorf("relationships.files.links = %v", filesRel["links"])
 	}
 	// list
 	w = do(t, f.handler, http.MethodGet, "/api/reviews", "")
@@ -256,6 +330,10 @@ func TestReviewLifecycleEndpoints(t *testing.T) {
 	files := decodeList(t, w)
 	if len(files) != 1 || files[0]["type"] != "review-files" || files[0]["id"] != "a.txt" {
 		t.Fatalf("files = %v", files)
+	}
+	fileAttrs := files[0]["attributes"].(map[string]any)
+	if fileAttrs["status"] != "added" || fileAttrs["additions"] != float64(1) || fileAttrs["deletions"] != float64(0) || fileAttrs["binary"] != false {
+		t.Errorf("file attributes = %v", fileAttrs)
 	}
 	// file diff by path segment and by query
 	w = do(t, f.handler, http.MethodGet, "/api/reviews/"+id+"/files/a.txt", "")
@@ -335,6 +413,7 @@ func TestReviewValidationErrors(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("wrong type: %d", w.Code)
 	}
+	assertErrorCode(t, w, "INVALID_REQUEST")
 	w = do(t, f.handler, http.MethodGet, "/api/reviews/not-an-id", "")
 	if w.Code != http.StatusNotFound {
 		t.Errorf("bad id: %d", w.Code)
@@ -434,4 +513,119 @@ func TestNewRouterStartsAndStopsSweeper(t *testing.T) {
 	if got, ok := store.Get(id2); !ok || got.Status() != session.StatusCreating {
 		t.Errorf("session swept after BuildContext was cancelled: %+v", got)
 	}
+}
+
+// TestChangeResourceLandingSHAPrefersMergeOverSquash pins changeResource's
+// precedence: when both a merge commit SHA and a squash commit SHA are
+// present, landingSha must be the merge commit, not the squash commit. A
+// change resolved with only one of the two (as in the fixture used by
+// TestRepositoriesAndChanges) cannot distinguish which order the candidates
+// are tried in, so this needs its own case with both set.
+func TestChangeResourceLandingSHAPrefersMergeOverSquash(t *testing.T) {
+	mergeSHA := strings.Repeat("a", 40)
+	squashSHA := strings.Repeat("b", 40)
+	repo, err := provider.NewRepositoryBuilder().SetProviderID("fake").SetFullName("atlas/server").
+		SetName("server").SetNamespace("atlas").SetDefaultBranch("main").SetWebURL("https://example.test/atlas/server").
+		SetCloneURL("file:///dev/null").Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr, err := provider.NewChangeRequestBuilder().SetProviderID("fake").SetRepository(repo).SetNumber(1).
+		SetTitle("t").SetTargetBranch("main").SetMergeCommitSHA(mergeSHA).SetSquashCommitSHA(squashSHA).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := changeResource(cr)
+	attrs, ok := res.Attributes.(changeAttributes)
+	if !ok {
+		t.Fatalf("attributes = %#v", res.Attributes)
+	}
+	if attrs.LandingSHA == nil || *attrs.LandingSHA != mergeSHA {
+		t.Errorf("landingSha = %v, want merge SHA %s (not squash SHA %s)", attrs.LandingSHA, mergeSHA, squashSHA)
+	}
+}
+
+// TestAcceptNegotiation pins middleware.go's content negotiation: an
+// acceptable Accept header reaches the handler, an unacceptable one is
+// rejected before the handler ever runs, with the exact 406 code.
+func TestAcceptNegotiation(t *testing.T) {
+	f := newAPIFixture(t)
+
+	r := httptest.NewRequest(http.MethodGet, "/api/providers", nil)
+	r.Header.Set("Accept", jsonapi.MediaType)
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("acceptable Accept header: code = %d body = %s", w.Code, w.Body.String())
+	}
+
+	r = httptest.NewRequest(http.MethodGet, "/api/providers", nil)
+	r.Header.Set("Accept", "text/html")
+	w = httptest.NewRecorder()
+	f.handler.ServeHTTP(w, r)
+	if w.Code != http.StatusNotAcceptable {
+		t.Fatalf("unacceptable Accept header: code = %d body = %s", w.Code, w.Body.String())
+	}
+	assertErrorCode(t, w, "NOT_ACCEPTABLE")
+}
+
+// TestValidateRepoFullNameAtHTTPLayer pins repoNameFrom's use of
+// gitx.ValidateRepoFullName: every rejection case from the spec (no `..`
+// segment, no leading /, - or ., and the owner/name shape) must reach the
+// HTTP layer as 400 INVALID_REPOSITORY.
+func TestValidateRepoFullNameAtHTTPLayer(t *testing.T) {
+	f := newAPIFixture(t)
+	cases := []struct {
+		name string
+		repo string
+	}{
+		{"no slash at all", "atlasserver"},
+		{"leading slash", "/atlas/server"},
+		{"leading dash", "-atlas/server"},
+		{"leading dot", ".atlas/server"},
+		{"dot-dot segment", "atlas/../server"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			target := "/api/providers/fake/repositories/" + url.PathEscape(tc.repo)
+			w := do(t, f.handler, http.MethodGet, target, "")
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("repo %q: code = %d body = %s", tc.repo, w.Code, w.Body.String())
+			}
+			assertErrorCode(t, w, "INVALID_REPOSITORY")
+		})
+	}
+}
+
+// TestSessionForDistinguishesCorruptFromAbsent proves I3's wiring of
+// session.Store.Corrupted: a review whose session.json is unreadable answers
+// 500 GIT_FAILURE (not the innocuous-looking 404 it produced before this
+// fix), while an id that genuinely never existed still answers 404.
+func TestSessionForDistinguishesCorruptFromAbsent(t *testing.T) {
+	f := newAPIFixture(t)
+
+	corruptID := "eeeeeeee"
+	dir := filepath.Join(f.store.Root(), corruptID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.json"), []byte("{not valid json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.store.LoadAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	w := do(t, f.handler, http.MethodGet, "/api/reviews/"+corruptID, "")
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("corrupt session: code = %d body = %s", w.Code, w.Body.String())
+	}
+	assertErrorCode(t, w, "GIT_FAILURE")
+
+	// A genuinely absent id (well-formed, never seen) must still be 404.
+	w = do(t, f.handler, http.MethodGet, "/api/reviews/ffffffff", "")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("absent session: code = %d body = %s", w.Code, w.Body.String())
+	}
+	assertErrorCode(t, w, "NOT_FOUND")
 }

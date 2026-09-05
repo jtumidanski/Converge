@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -111,7 +112,10 @@ func (s *server) listReviews(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-// sessionFor resolves {id} or writes 404.
+// sessionFor resolves {id}, writing 404 when it genuinely does not exist and
+// 500 GIT_FAILURE when the store found its session.json unreadable or
+// invalid (session.Store.Corrupted) — Get's bool alone cannot tell the two
+// apart, per session.Store.Get's documented contract.
 func (s *server) sessionFor(w http.ResponseWriter, r *http.Request) (session.Session, bool) {
 	id := r.PathValue("id")
 	if err := workspace.ValidateSessionID(id); err != nil {
@@ -120,6 +124,11 @@ func (s *server) sessionFor(w http.ResponseWriter, r *http.Request) (session.Ses
 	}
 	sess, ok := s.deps.Service.Get(id)
 	if !ok {
+		if s.deps.Service.Corrupted(id) {
+			s.deps.Log.Error("session record unreadable", slog.String("session", id))
+			_ = jsonapi.WriteError(w, http.StatusInternalServerError, "GIT_FAILURE", jsonapi.StatusTitle(http.StatusInternalServerError), "This review's stored state could not be read.")
+			return session.Session{}, false
+		}
 		_ = jsonapi.WriteError(w, http.StatusNotFound, "NOT_FOUND", jsonapi.StatusTitle(http.StatusNotFound), "No review exists with that id.")
 		return session.Session{}, false
 	}
