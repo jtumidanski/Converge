@@ -22,8 +22,9 @@ describe("AppRoutes", () => {
   });
 
   it("routes /reviews/:id to the review page rather than the not-found panel", () => {
-    renderAt("/reviews/7f14b2c8");
+    const { container } = renderAt("/reviews/7f14b2c8");
     expect(screen.queryByText("Page not found")).not.toBeInTheDocument();
-    expect(screen.getByText(/loading review/i)).toBeInTheDocument();
+    // Before the review data loads, ReviewPage renders a loading skeleton.
+    expect(container.querySelector('[data-slot="skeleton"]')).toBeInTheDocument();
   });
 });
