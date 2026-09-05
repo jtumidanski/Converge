@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -374,28 +375,48 @@ func TestServiceStartBuildRespectsMaxConcurrentBuilds(t *testing.T) {
 	f := newServiceFixtureWith(t, limit)
 
 	var mu sync.Mutex
-	inflight, peak := 0, 0
-	// The overlap is a barrier, not a sleep: every build blocks inside Apply
-	// until `limit` builds are simultaneously in flight, so the lower bound is
-	// reached by construction on any machine rather than by winning a race
-	// against a 250ms hold. It cannot deadlock — the semaphore admits `limit`
-	// builds and there are more sessions than that, so the limit-th arrival
-	// always happens — but a watchdog releases the barrier anyway so a
-	// regression fails as an assertion instead of hanging.
+	inflight, peak, entered := 0, 0, 0
+	// Every build blocks inside Apply on this barrier while holding its
+	// semaphore slot, and the barrier is only opened once *all* `builds` are
+	// accounted for — either inside Apply, or proven parked on the semaphore
+	// (see queuedOnSemaphore). Opening it as soon as `limit` builds overlap
+	// would let the rest stream through without ever queuing, which is what
+	// made this test pass with the bound removed.
+	//
+	// So the two outcomes are distinguished by construction, with no timing
+	// assumption on either side:
+	//   - bound present: exactly `limit` builds are in Apply, the other
+	//     builds-limit are parked in StartBuild's semaphore select and stay
+	//     parked until we open the barrier; peak == limit.
+	//   - bound removed: all `builds` reach Apply at once, nothing is ever
+	//     parked, the hook below opens the barrier and peak == builds > limit.
+	// A watchdog opens the barrier regardless so any other regression fails as
+	// an assertion instead of hanging.
 	barrier := make(chan struct{})
 	var release sync.Once
 	open := func() { release.Do(func() { close(barrier) }) }
-	watchdog := time.AfterFunc(60*time.Second, open)
+	opened := func() bool {
+		select {
+		case <-barrier:
+			return true
+		default:
+			return false
+		}
+	}
+	watchdog := time.AfterFunc(120*time.Second, open)
 	defer watchdog.Stop()
 	f.app.set(func(context.Context, session.ResolvedChange) {
 		mu.Lock()
 		inflight++
+		entered++
 		if inflight > peak {
 			peak = inflight
 		}
-		reached := inflight >= limit
+		all := entered >= builds
 		mu.Unlock()
-		if reached {
+		if all {
+			// Every build got into Apply simultaneously: the bound is gone.
+			// Release so the assertion below reports it instead of hanging.
 			open()
 		}
 		<-barrier
@@ -411,6 +432,30 @@ func TestServiceStartBuildRespectsMaxConcurrentBuilds(t *testing.T) {
 	for _, id := range ids {
 		f.svc.StartBuild(context.Background(), id)
 	}
+
+	// Hold every slot until all `builds` are accounted for. With the bound in
+	// place the queued builds are parked forever (nothing else can release the
+	// semaphore), so this loop always terminates on the condition rather than
+	// on the deadline; the deadline only exists so a regression is an
+	// assertion, not a hang.
+	deadline := time.Now().Add(120 * time.Second)
+	for !opened() {
+		mu.Lock()
+		got := entered
+		mu.Unlock()
+		if got >= limit && queuedOnSemaphore() >= builds-limit {
+			open()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Errorf("timed out: %d builds reached Apply and %d are parked on the semaphore, want %d + %d",
+				got, queuedOnSemaphore(), limit, builds-limit)
+			open()
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
 	for _, id := range ids {
 		if got := f.awaitTerminal(t, id, 120*time.Second); got.Status() != session.StatusReady {
 			t.Fatalf("session %s status = %s err = %+v", id, got.Status(), got.Error())
@@ -423,8 +468,46 @@ func TestServiceStartBuildRespectsMaxConcurrentBuilds(t *testing.T) {
 		t.Errorf("peak concurrent builds = %d, want <= MaxConcurrentBuilds (%d)", got, limit)
 	}
 	if got < limit {
-		t.Errorf("peak concurrent builds = %d: the barrier never saw %d builds overlap, so the bound was not exercised", got, limit)
+		t.Errorf("peak concurrent builds = %d: fewer than %d builds ever overlapped, so the bound was not exercised", got, limit)
 	}
+}
+
+// queuedOnSemaphore counts goroutines parked in StartBuild's semaphore
+// select — i.e. builds the bound is actively holding back. It is what lets
+// the test above prove "these builds are blocked" instead of assuming it
+// after a sleep: a goroutine whose select is the one in StartBuild's build
+// goroutine can only be waiting for a slot (its other case is ctx.Done, and
+// the test's context is never cancelled).
+//
+// The match is deliberately narrow: the goroutine must be in the "select"
+// wait state *and* its topmost frame must be that select. A build goroutine
+// that has already acquired its slot has StartBuild.func1 deeper on its
+// stack (below Build), so it is never miscounted as queued.
+func queuedOnSemaphore() int {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	const waiting = "internal/review.(*Service).StartBuild.func1("
+	count := 0
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		lines := strings.Split(g, "\n")
+		if len(lines) < 2 || !strings.HasPrefix(lines[0], "goroutine ") {
+			continue
+		}
+		if !strings.Contains(lines[0], "[select") {
+			continue
+		}
+		if strings.Contains(lines[1], waiting) {
+			count++
+		}
+	}
+	return count
 }
 
 // TestServiceBuildRecordsFailureOnTheLiveSession covers every failure the
@@ -556,6 +639,38 @@ func TestServiceBuildDoesNotResurrectATerminalSession(t *testing.T) {
 			t.Errorf("session directory was re-created after cleanup: %v", err)
 		}
 	})
+}
+
+// TestServiceProgressDoesNotResurrectADiscardedSession covers the stage
+// markers a build writes mid-pipeline. They are written from the build's own
+// copy of the session, which goes stale the moment a discard or an expiry
+// lands, so they need the same compare-and-swap the terminal write uses: an
+// unguarded stage write re-creates the session directory Cleanup has just
+// removed and puts a CREATING record back in the index over the FINISHED one.
+func TestServiceProgressDoesNotResurrectADiscardedSession(t *testing.T) {
+	f := newServiceFixture(t)
+	ctx := context.Background()
+	s := f.create(t)
+	if err := f.svc.Finish(ctx, s.ID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(f.ws.SessionDir(s.ID())); !os.IsNotExist(err) {
+		t.Fatalf("precondition: the discarded session's directory still exists: %v", err)
+	}
+
+	// The build only learns about the discard when the store refuses a write,
+	// so it keeps marching through stages on its stale copy.
+	got := f.svc.progress(s.WithStage(session.StageDiffing, time.Now()))
+	if got.Stage() != session.StageDiffing {
+		t.Errorf("progress returned stage %q, want %q: the build's own copy must keep advancing", got.Stage(), session.StageDiffing)
+	}
+	stored, ok := f.svc.Get(s.ID())
+	if !ok || stored.Status() != session.StatusFinished {
+		t.Errorf("stored status = %s ok = %v, want FINISHED: the stage write resurrected the session", stored.Status(), ok)
+	}
+	if _, err := os.Stat(f.ws.SessionDir(s.ID())); !os.IsNotExist(err) {
+		t.Errorf("the stage write re-created the session directory of a FINISHED session: %v", err)
+	}
 }
 
 // TestServiceBuildCancellationIsRecordedAsInterrupted is the I4 regression: a

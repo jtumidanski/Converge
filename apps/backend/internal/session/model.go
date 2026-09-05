@@ -132,8 +132,19 @@ func (s Session) Totals() *diff.Totals {
 // IsExpired reports whether now is past the expiry.
 func (s Session) IsExpired(now time.Time) bool { return !now.Before(s.expiresAt) }
 
-// IsActive is true unless the session is FINISHED or EXPIRED.
-func (s Session) IsActive() bool { return s.status != StatusFinished && s.status != StatusExpired }
+// IsActive reports whether the session is in one of the live states. It is
+// a whitelist rather than "not FINISHED and not EXPIRED" so that a
+// zero-value Session (empty status — never a real session) is not reported
+// as active: callers such as Store.SaveActive treat "active" as permission
+// to write, and a value that was never built must never earn that.
+func (s Session) IsActive() bool {
+	switch s.status {
+	case StatusCreating, StatusReady, StatusConflicted, StatusFailed:
+		return true
+	default:
+		return false
+	}
+}
 
 // EarliestChange returns the resolved change with the earliest MergedAt
 // timestamp. Ties (two changes landed with the same merge timestamp) are

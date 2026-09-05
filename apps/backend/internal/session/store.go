@@ -40,6 +40,12 @@ type Store struct {
 	// automatic retry happens. The map only ever holds one entry per
 	// currently-failing id, so it cannot grow unbounded.
 	pendingCleanup map[string]int
+	// onWriteRecord, when non-nil, is called at the top of writeRecord with
+	// the id being written. It exists so a test can observe the state of the
+	// store *during* the write — specifically, that SaveActive holds the
+	// store's lock across it — instead of trying to hit that window with a
+	// sleep. It is never set outside tests (nothing exported can set it).
+	onWriteRecord func(id string)
 }
 
 // maxCleanupRetries bounds how many times Sweep will retry a failed Cleanup
@@ -92,16 +98,20 @@ func (s *Store) Save(sess Session) error {
 //   - (stored, ErrTerminal) when the stored session is FINISHED or EXPIRED —
 //     nothing was written, and the stored value is returned so the caller can
 //     report the session as it truly is;
-//   - (zero, ErrNotFound) when the id is not in the index at all (a discard
-//     removed it): writing would re-create a record just proven absent;
+//   - (zero, ErrNotFound) when the id is not in the index at all: nothing in
+//     the store ever deletes an indexed id (a discard marks it FINISHED, it
+//     does not remove it), so this only happens for an id that was never
+//     saved — writing would create a record for a session this store has
+//     never seen;
 //   - (zero, err) when the write itself failed.
 //
 // The disk write is deliberately performed while the lock is held. Splitting
 // it out would reopen exactly the check/write gap this method exists to
-// close, and the cost is bounded: terminal writes happen at most once per
-// build and concurrent builds are capped by MAX_CONCURRENT_BUILDS, so the
-// lock is held for a handful of small fsync+rename operations, never for git
-// or network work (Cleanup still runs outside the lock — see Finish).
+// close, and the cost is bounded: a build makes a handful of guarded writes
+// (its intermediate stage markers plus one terminal transition) and
+// concurrent builds are capped by MAX_CONCURRENT_BUILDS, so the lock is held
+// only for small fsync+rename operations, never for git or network work
+// (Cleanup still runs outside the lock — see Finish).
 func (s *Store) SaveActive(sess Session) (Session, error) {
 	id := sess.ID()
 	s.mu.Lock()
@@ -125,6 +135,9 @@ func (s *Store) SaveActive(sess Session) (Session, error) {
 // takes no locks so it can be called either standalone (Save) or with the
 // store's lock already held (SaveActive).
 func (s *Store) writeRecord(sess Session) error {
+	if s.onWriteRecord != nil {
+		s.onWriteRecord(sess.ID())
+	}
 	dir := s.Dir(sess.ID())
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("session: mkdir: %w", err)

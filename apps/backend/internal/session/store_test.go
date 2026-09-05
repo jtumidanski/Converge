@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -634,7 +635,75 @@ func readStage(t *testing.T, st *Store, id string) string {
 // between the two lets a Finish land in that gap, so the write re-creates the
 // directory Cleanup had just removed and the review reports a live status
 // against a deleted worktree.
+//
+// The mechanism that closes the gap is that the status check and the record
+// write happen under a single acquisition of the store's lock, so that is
+// what is asserted — from inside the write itself, via onWriteRecord, rather
+// than by trying to land a racing Finish in a sub-millisecond fsync window
+// with a sleep. A racing Finish is started from inside that same window as
+// well, so the end-to-end invariant is exercised too; but the discriminating
+// assertion is the lock one, which holds on every run and every machine.
 func TestSaveActiveIsAtomicWithConcurrentFinish(t *testing.T) {
+	root := t.TempDir()
+	now := t0
+	st := NewStore(root, 24*time.Hour, &dirCleaner{root: root},
+		slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
+		func() time.Time { return now })
+	s := newSession(t)
+	if err := st.Save(s); err != nil {
+		t.Fatal(err)
+	}
+	staged := s.WithStage("diffing", t0.Add(time.Minute))
+
+	var (
+		wg          sync.WaitGroup
+		lockWasFree atomic.Bool
+		finishErr   error
+	)
+	st.onWriteRecord = func(id string) {
+		if id != s.ID() {
+			return
+		}
+		st.onWriteRecord = nil // this must fire for the guarded write only
+		// The write must run with the store's write lock held: that is the
+		// only thing preventing a Finish from landing between the status
+		// check and the write. If the lock is free here, the gap is open.
+		if st.mu.TryLock() {
+			st.mu.Unlock()
+			lockWasFree.Store(true)
+		}
+		// Aim a real Finish at this exact window as well.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			finishErr = st.Finish(context.Background(), s.ID())
+		}()
+	}
+	_, saveErr := st.SaveActive(staged)
+	wg.Wait()
+
+	if lockWasFree.Load() {
+		t.Error("SaveActive wrote session.json without holding the store lock: a concurrent Finish can land between the status check and the write")
+	}
+	if finishErr != nil {
+		t.Fatalf("finish: %v", finishErr)
+	}
+	if saveErr != nil && !errors.Is(saveErr, ErrTerminal) {
+		t.Fatalf("SaveActive = %v, want nil or ErrTerminal", saveErr)
+	}
+	indexed, ok := st.Get(s.ID())
+	if !ok || indexed.Status() != StatusFinished {
+		t.Fatalf("indexed = %+v ok=%v, want FINISHED", indexed.Status(), ok)
+	}
+	if _, err := os.Stat(st.Dir(s.ID())); !os.IsNotExist(err) {
+		t.Fatalf("the session directory of a FINISHED session survives (%v): the write landed after Cleanup and resurrected it", err)
+	}
+}
+
+// TestSaveActiveRacesFinish is the same invariant driven concurrently rather
+// than through the injection point, so the two mutators are exercised
+// against each other as they actually run.
+func TestSaveActiveRacesFinish(t *testing.T) {
 	root := t.TempDir()
 	now := t0
 	st := NewStore(root, 24*time.Hour, &dirCleaner{root: root},

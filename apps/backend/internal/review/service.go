@@ -283,13 +283,37 @@ func (s *Service) persist(sess session.Session) error {
 	return nil
 }
 
-// progress persists an intermediate pipeline state. Unlike a terminal
-// transition, a stage marker that failed to reach disk cannot mislead a
-// client — the session stays CREATING either way — so the build continues
-// after logging (persist already logs at Error level). Terminal transitions
-// never use this helper.
+// progress persists an intermediate pipeline state through the same
+// terminal-guarded compare-and-swap the terminal transitions use.
+//
+// The guard is not optional here. These writes happen repeatedly in the
+// middle of a build, so a discard or expiry landing between two of them
+// would otherwise be undone by the next stage marker: a plain Save
+// re-creates the session directory Cleanup has just removed and rewrites a
+// CREATING record over the FINISHED one in the index. That is the same
+// resurrection the terminal path is guarded against, on a path taken far
+// more often.
+//
+// A refused or failed write never fails the build. ErrTerminal/ErrNotFound
+// mean the session finished underneath the build — the marker is simply
+// dropped (logged at Debug; the build's own terminal write will be dropped
+// by the same guard, which is where the outcome is reported). A genuine
+// write failure cannot mislead a client either — the session stays CREATING
+// either way — so it is logged at Error and the build continues. Terminal
+// transitions never use this helper.
 func (s *Service) progress(sess session.Session) session.Session {
-	_ = s.persist(sess)
+	if _, err := s.deps.Store.SaveActive(sess); err != nil {
+		if errors.Is(err, session.ErrTerminal) || errors.Is(err, session.ErrNotFound) {
+			s.deps.Log.Debug("session left the active states during the build; stage write dropped",
+				slog.String("session", sess.ID()),
+				slog.String("stage", sess.Stage()))
+		} else {
+			s.deps.Log.Error("persist stage failed",
+				slog.String("session", sess.ID()),
+				slog.String("stage", sess.Stage()),
+				slog.String("error", err.Error()))
+		}
+	}
 	return sess
 }
 
