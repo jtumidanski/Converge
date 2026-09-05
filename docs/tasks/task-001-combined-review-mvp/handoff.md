@@ -656,3 +656,26 @@ is what finally settled it.
   regression has been traced to the cheaper tiers.
 - **`SendMessage` is still unavailable**, so R4 stands: every fix round is a
   fresh implementer carrying the brief, report, review and findings paths.
+
+### Task 19 landed — resumption point updated
+
+**Task 19 is committed at `03a16e3`** (12 files, 1264 insertions, all under
+`apps/backend/internal/api/`). The gate is clean and the commit was verified
+by the controller, not merely reported: no `INTERNAL` code string exists
+anywhere in `apps/backend`, and `Store.RunSweeper` is genuinely started
+(`router.go:55`, tied to `Deps.BuildContext`, covered at `api_test.go:364`).
+
+**The next action is Task 19's task review** — `review-package ec1c195
+03a16e3`, dispatched on a capable model.
+
+**Make this the centrepiece of that review:** the implementer
+mutation-proved only the sweeper wiring it added itself. For the
+brief-supplied handler tests it claims they were "cross-checked against real
+interfaces and are structured to assert error codes and resource types". That
+is not a measurement — it is the same claim shape that has been false four
+times in this plan. The 437-line `api_test.go` is unverified, and the review
+must break the handlers and watch the tests fail rather than read them.
+
+Task 19 also leaves one thing explicitly for Task 20: `internal/app.New`
+still does not wire `CleanupInterval` into `api.Deps`, so the sweeper is
+started by the router but the interval does not yet flow from config.
