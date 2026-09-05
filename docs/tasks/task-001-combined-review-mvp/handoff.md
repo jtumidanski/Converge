@@ -569,3 +569,90 @@ mechanism fails loudly, make a reviewer break it and watch.**
 - `classify` orders cancellation ahead of **all** classifications, so a CONFLICT
   landing exactly at shutdown records as INTERRUPTED. Truthful, and the comment
   now says so.
+
+---
+
+## 1b. Status (supersedes §1a)
+
+**18 of 30 tasks complete.** Phases A–D finished; Phase E (HTTP API) is
+under way.
+
+| Phase | Tasks | State |
+|---|---|---|
+| A — Foundations | 1–3 | complete |
+| B — Providers | 4–6 | complete |
+| C — Git layers | 7–9 | complete |
+| D — Review domain | 10–17 | **complete** |
+| E — HTTP API | 18–20 | 18 complete; **19 in flight**; 20 not started |
+| F — Frontend | 21–26 | not started |
+| G — Packaging, CI, docs | 27–30 | not started |
+
+| Task | Subject | Range | Outcome |
+|---|---|---|---|
+| 15 | Review service + cleaner adapter | `72549d3..4df8efb` | clean (**5 fix rounds**) |
+| 16 | Integration tests (FR-12.2) | `4df8efb..f62bdcd` | clean (**0 fix rounds**) |
+| 17 | App wiring + `converge-cli` | `f62bdcd..de14397` | clean (1 fix round) |
+| 18 | JSON:API encode/decode | `de14397..ec1c195` | clean (1 fix round) |
+
+### Exactly where to resume
+
+**Task 19 (HTTP handlers) was dispatched at base `ec1c195` and its result was
+not recorded here.** Check `git log` first: if a Task 19 commit exists, the
+next action is its task review (`review-package … ec1c195 <head>`); if not,
+re-dispatch from `.superpowers/sdd/plan/task-19-brief.md`.
+
+Then Task 20, then Phase F.
+
+### The Task 15 correction — read this before trusting §1a
+
+§1a said "the round-4 fix DOES NOT WORK … measured, not inferred." **That
+verdict was false**, and it cost a wasted round. The measurement had applied
+its mutation by line number, and round 4 had shifted the target line, so the
+mutation silently never landed and the test passed legitimately. The tell was
+in the data all along: the runs did not take ~121 s each, which they must
+have if the broken matcher were really in effect.
+
+**Standing rule that came out of it:** any mutation measurement must print
+grep proof that the mutation landed, and a ratio that contradicts a clear
+mechanical argument is a suspect *measurement* first and a code defect
+second. When the failure path is slow, shorten the timers in a scratch copy
+and then re-run once at real durations to prove duration-independence — that
+is what finally settled it.
+
+## 2b. Carried items for the remaining tasks
+
+- **Task 20 must not re-open what Task 19 wired.** `Store.RunSweeper` was
+  never started anywhere before Task 19 (`cfg.CleanupInterval` was parsed and
+  ignored — correct for a one-shot CLI, wrong for a server). Task 19 owns
+  starting it and stopping it cleanly.
+- **Phase F consumes exact strings.** The JSON:API field names, the error
+  `code` set, and the resource `type` values are contract. Task 18's review
+  proved the wire format is pinned by tests (renaming any contract field
+  fails a test), so treat a frontend/back-end mismatch as a frontend bug
+  until a test says otherwise.
+- **Task 30 minor list** now also holds: `checkGitVersion` accepts
+  `"3.garbage"`/`"10.x"`/`"9.a.b"` post-`de14397` and its justifying comment
+  is wrong; `config` accepts userinfo in `BASE_URL` (only the *logging* was
+  fixed, in Task 17); slog attribute **keys** and group names are never
+  scrubbed; secret scrubbing is exact-substring only, so base64 and
+  percent-encoded forms pass through; `gitx/exec.go:111` sets `cmd.Dir`
+  with no empty-`Dir` guard; `harness_test.go:116` calls `t.Fatalf` from a
+  goroutine; commit `ec1c195` uses a `test(jsonapi):` subject where the rest
+  of the branch uses `test(task-001):`.
+
+## 3b. What changed about how this plan is run
+
+- **The defect class is now nine instances**, and its subtlest form appeared
+  in Task 18: a test that was not blind, merely *aimed slightly off-target* —
+  it asserted that some error came back, not which path produced it, and so
+  passed under an off-by-one that changed the failure's cause.
+- **Every review since Task 16 has re-run the implementer's mutations
+  itself** rather than reading the claim. That found the Task 18 miss and
+  confirmed Task 17's fixes. Keep doing it; it is the only check that has
+  reliably caught this plan's defect class.
+- **Model tier is now scaled to the diff**, not to the task number: opus for
+  the concurrency and token-handling reviews, sonnet for ordinary
+  implementation, haiku for a three-line test fix and its re-review. No
+  regression has been traced to the cheaper tiers.
+- **`SendMessage` is still unavailable**, so R4 stands: every fix round is a
+  fresh implementer carrying the brief, report, review and findings paths.
