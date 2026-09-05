@@ -5,13 +5,21 @@ import (
 	"testing"
 )
 
-func TestFSIsReadableAndPresentReflectsIndex(t *testing.T) {
-	entries, err := fs.ReadDir(FS(), ".")
-	if err != nil {
+func TestFSIsReadable(t *testing.T) {
+	if _, err := fs.ReadDir(FS(), "."); err != nil {
 		t.Fatalf("ReadDir: %v", err)
 	}
-	// dist/ only holds .gitkeep in a source checkout, so Present must be false.
-	if Present() {
-		t.Fatalf("Present() = true with entries %v, want false without index.html", entries)
+}
+
+// TestPresentReflectsIndexHTML independently stats index.html and checks
+// Present() agrees, so it catches Present() being hardcoded to either
+// true or false regardless of the embedded dist contents. Both outcomes
+// (index.html present after `make build`, absent in a source checkout)
+// are valid; what must hold is that Present() tracks reality.
+func TestPresentReflectsIndexHTML(t *testing.T) {
+	_, statErr := fs.Stat(FS(), "index.html")
+	want := statErr == nil
+	if got := Present(); got != want {
+		t.Fatalf("Present() = %v, want %v (fs.Stat(\"index.html\") err = %v)", got, want, statErr)
 	}
 }

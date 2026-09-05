@@ -8,6 +8,8 @@ VERSION   ?= $(shell $(ROOT)/tools/version.sh)
 GIT_SHA   ?= $(shell git rev-parse HEAD)
 LDFLAGS   := -s -w -X github.com/jtumidanski/converge/internal/buildinfo.Version=$(VERSION)
 
+NPM := export NVM_DIR="$$HOME/.nvm" && . "$$NVM_DIR/nvm.sh" >/dev/null && nvm use 22 >/dev/null && npm
+
 .PHONY: help version lint test test-integration build
 
 help: ## List targets
@@ -16,14 +18,19 @@ help: ## List targets
 version: ## Print the build version
 	@echo $(VERSION)
 
-lint: ## Lint backend (frontend added in Task 21)
+lint: ## Lint backend and frontend
 	cd $(BACKEND) && go vet ./... && go tool golangci-lint run
+	cd $(FRONTEND) && $(NPM) run lint && $(NPM) run format:check
 
-test: ## Unit tests
+test: ## Unit tests, both apps
 	cd $(BACKEND) && go test -race -count=1 ./...
+	cd $(FRONTEND) && $(NPM) test
 
 test-integration: ## Integration tests (local git only, no network)
 	cd $(BACKEND) && go test -race -count=1 -tags integration ./...
 
-build: ## Build backend binaries into dist/ (frontend build wired in Task 21)
+build: ## Build the frontend into the backend embed dir, then the binaries
+	cd $(FRONTEND) && $(NPM) ci && $(NPM) run build
+	touch $(BACKEND)/internal/ui/dist/.gitkeep
 	cd $(BACKEND) && CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" ./...
+	$(ROOT)/tools/build-backend.sh
