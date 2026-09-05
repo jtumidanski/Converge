@@ -7,7 +7,12 @@ export const repositorySchema = z.object({
     .min(1, "Enter a repository as owner/name")
     .regex(/^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)+$/, "Enter a repository as owner/name")
     .refine((value) => !value.includes(".."), "Path segments cannot contain ..")
-    .refine((value) => !/^[-./]/.test(value), "A repository cannot start with -, . or /"),
+    .refine((value) => !/^[-./]/.test(value), "A repository cannot start with -, . or /")
+    .refine(
+      (value) =>
+        value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== ".."),
+      "Path segments cannot contain ..",
+    ),
 });
 
 export type RepositoryFormData = z.infer<typeof repositorySchema>;
