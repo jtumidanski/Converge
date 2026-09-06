@@ -271,7 +271,131 @@ recorded because Task 30's own reviewer brief claimed audits existed for 4–29.
 
 All six Important findings were sent to a **single** consolidated fix dispatch
 (not one fixer per finding), together with the housekeeping deletion of the five
-unused shadcn components. Scope, exact locations and required verification are
-recorded in `.superpowers/sdd/plan/task-30-fix-findings.md`.
+unused shadcn components.
 
-Results are appended below.
+Commits: `072dbe8` → `8b836fc` → `2eef8a8` → `d6fc71f` → `f4c1530`.
+41 files, +1,773 / −443.
+
+| Finding | Resolution |
+|---|---|
+| I-1 | `gitx.Options.AllowFileProtocol`, default false. Production sends no `-c protocol.file.allow` at all (`exec.go:110-120`; sole production construction at `app/app.go:223` omits it). All 22 opt-ins are in `_test.go`. `testutil/repo.go:142` still returns `file:// + r.Bare` — the suite was **not** weakened to make this pass. |
+| I-2 | `MaxScanCacheEntries = 64` + `makeScanRoomLocked` (`github/list.go:43-63`), expiry-first then oldest-first, tie broken on key so the choice is total and independent of Go map order. No GitLab cache added. |
+| I-3 | One `sync.WaitGroup` on `app.App`, threaded to `review.Deps.Background` and `api.Deps.Background`. `App.Close` drains ≤20 s, then returns `ErrBackgroundDrainTimeout` joined with any cleanup error. `main.go` now logs `Close`'s error instead of discarding it. |
+| F-1 / F-2 | Call-site `loading=` expressions only — `loading={repositories.isLoading \|\| !providerId}` and `loading={changes.isLoading \|\| repositoryQuery.isPending}`. **No `error` prop added anywhere.** `FileTree` and `ProviderPicker` untouched. |
+| F-3 | `cursor-pointer` at the primitive level: `button.tsx` cva base, `SelectTrigger`, `SelectItem`, `Checkbox`, and FileTree's plain `<button>` (the only interactive element outside `ui/`). |
+| Housekeeping | `card`, `dialog`, `scroll-area`, `separator`, `tooltip` deleted (410 lines) after re-verifying zero references. Disposes of the hardcoded `bg-black/10`. |
+
+### The fixes were mutation-tested, not asserted
+
+Every fix was verified by breaking it deliberately in a `/tmp` scratch copy and
+confirming the tests caught it (`grep -rn MUTANT` in the tree returns nothing):
+
+| Mutation | Result |
+|---|---|
+| I-1 always-allow | 1/1 FAIL |
+| I-2 eviction disabled | 2/2 FAIL |
+| I-3 build untracked | 1/1 FAIL |
+| I-3 sweeper untracked | 1/1 FAIL |
+| I-3 no drain wait | 2/2 FAIL |
+| F-1/F-2 call sites reverted | **3 failed / 13 passed**, then 16 passed after |
+
+That last row is the one that mattered. This defect survived 26 per-task audits
+precisely because the empty-state branch was never exercised by a test; a "fix"
+shipped with tests that pass against the bug would have reproduced the failure
+mode exactly. Reverting the call sites and watching the new tests fail is what
+distinguishes a regression test from a test.
+
+### Scoped re-review — PASS
+
+One re-review of the fix range `072dbe8..HEAD` (the single scoped re-review the
+process allows after a final-review fix wave). All six findings verdicted
+**ADDRESSED**; **no new Critical or Important breakage** in the fix diff.
+
+It independently re-ran everything rather than trusting the fix report:
+`go build`, `go vet`, `go tool golangci-lint run` (0 issues), `go test -race
+-count=1 ./...` (19 packages, 0 failures), `go test -race -tags integration
+./internal/review/...` (10.8 s — this is what proves I-1 did not break `file://`
+clones), `npm run lint` (clean), `npm test` (19 files / 97 tests passed),
+`npm run build` (✓ 844 ms).
+
+The I-3 review is worth recording in detail, since a `WaitGroup` misuse is the
+most dangerous thing in this diff: `Add(1)` is outside the goroutine in both
+producers (`review/service.go:171`, `api/router.go:60`), `Done` is `defer`red as
+each goroutine's first statement so panic paths still decrement exactly once,
+nil-substitution in `NewService`/`NewRouter` means no path calls `Done` on a nil
+group, `waitTimeout` uses a fresh channel and timer per call, and `App.Close` is
+invoked once per process from a single `defer` — no double-close and no
+reuse-before-`Wait`-returned.
+
+Two claims from the fix wave were checked rather than accepted:
+
+- **The F-1/F-2 regression tests genuinely fail against the bug.** The reviewer
+  reverted both `loading=` expressions in place and reproduced `3 failed / 13
+  passed` with the exact `expected document not to contain element, found <p>This
+  token cannot see any repositories on this provider.</p>` failure, then restored
+  the files.
+- **`backgroundDrainTimeout` as a `var` is a test seam, not a weakening.** It is
+  package-private, 20 s, and referenced in exactly three places: the declaration,
+  the single `Close` read, and `background_test.go:34-36`, which saves and
+  restores it via `t.Cleanup`. Production never reassigns it.
+
+### Concerns raised by the fix wave, adjudicated
+
+**Ruling R62 — the "indefinite skeleton with zero providers" concern is moot.**
+The fix wave reported that with no providers configured `SelectRepositoryPage`
+now shows skeletons forever rather than a false empty state, and proposed a
+dedicated empty state. Checked rather than accepted: `config/config.go:193`
+**refuses to start the server** with zero providers ("at least one provider must
+be configured", pinned by `config_test.go:78`). So `providers.data` can only be
+empty via an API failure, which renders the ErrorBanner branch instead. The state
+is unreachable in production.
+
+Recorded as a **conditional backlog item** rather than dismissed: if a future
+change ever lets the provider list be legitimately empty — filtering, per-user
+permissions — this becomes a real dead-end screen and needs the dedicated state.
+
+**`MaxScanCacheEntries = 64` — accepted.** The findings named no number; 64
+distinct target branches per repository sits well above realistic interactive use
+while bounding both the memory and the 10-upstream-calls-per-novel-key cost. It
+is a named exported constant, so it is tunable rather than buried.
+
+### Deviations the fix wave volunteered
+
+Five, all self-reported without being asked: `SelectItem` also received
+`cursor-pointer`; `backgroundDrainTimeout` was made a `var` for the test seam
+above, with repo precedent cited (`MinGitVersion`, `listenAndServe`); `main.go`
+stopped discarding `Close`'s error; the three reviewer section files were
+committed; and `f4c1530` is a comment-only follow-up from its own self-review.
+All are in-scope improvements or necessary test seams.
+
+### Remaining non-blocking notes
+
+- A `sync.WaitGroup` contract nit: `Add(1)` in `StartBuild` could in principle
+  race a `Close`-side `Wait` at counter zero. Unreachable in production — HTTP
+  drains first and `buildCtx` is cancelled before `Close` — but it is why the
+  pattern would become fragile if a future caller invoked `Create` after
+  shutdown.
+- `ensureScanned` holds `c.mu` across network I/O. Pre-existing, predates this
+  range, out of scope for the fix wave.
+
+---
+
+## 9. Final gate, post-fix
+
+The full gate was re-run from a clean tree after the fix wave and the scoped
+re-review, at `f4c1530`:
+
+| Command | Result |
+|---|---|
+| `make clean` | exit 0 |
+| `make lint` | exit 0 |
+| `make test` | exit 0 |
+| `make test-integration` | exit 0 |
+| `make build` | exit 0 |
+| `make docker-build` | exit 0 |
+
+All six green, matching the pre-review gate in §1. Tree clean afterwards.
+
+**Branch verdict: ready for integration.** Zero Critical findings; all six
+Important findings fixed, mutation-tested and independently re-verified; all
+remaining Minor findings triaged ACCEPT with reasons recorded above.
