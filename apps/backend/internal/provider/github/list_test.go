@@ -94,3 +94,70 @@ func TestListMergedChangesConcurrentScanIsRaceFree(t *testing.T) {
 		t.Errorf("ListMergedChanges: %v", err)
 	}
 }
+
+// newEmptyScanServer answers every merged-PR listing with an empty page and no
+// Link header, so one scan costs exactly one request and terminates.
+func newEmptyScanServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func boundedCacheRepo(t *testing.T) provider.Repository {
+	t.Helper()
+	repo, err := provider.NewRepositoryBuilder().
+		SetProviderID("gh").
+		SetFullName("atlas/race").
+		SetCloneURL("https://github.com/atlas/race.git").
+		Build()
+	if err != nil {
+		t.Fatalf("repo setup: %v", err)
+	}
+	return repo
+}
+
+// The scan cache is keyed on the caller-supplied ?target= branch, so a client
+// that varies it must not be able to grow the map without limit.
+func TestScanCacheEvictsOldestWhenFull(t *testing.T) {
+	srv := newEmptyScanServer(t)
+	now := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	c := New("gh", "GitHub", srv.URL, config.NewSecret("ghp_test"), srv.Client(), func() time.Time { return now })
+	repo := boundedCacheRepo(t)
+
+	for i := 0; i < MaxScanCacheEntries*3; i++ {
+		if _, err := c.ListMergedChanges(context.Background(), repo, fmt.Sprintf("feature/b%d", i), "", provider.Page{Number: 1, Size: 30}); err != nil {
+			t.Fatalf("target %d: %v", i, err)
+		}
+	}
+	c.mu.Lock()
+	n := len(c.scans)
+	c.mu.Unlock()
+	if n != MaxScanCacheEntries {
+		t.Errorf("scan cache holds %d entries, want it bounded at %d", n, MaxScanCacheEntries)
+	}
+}
+
+// Entries past their TTL are dropped rather than counted against the cap.
+func TestScanCacheDropsExpiredEntries(t *testing.T) {
+	srv := newEmptyScanServer(t)
+	now := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	c := New("gh", "GitHub", srv.URL, config.NewSecret("ghp_test"), srv.Client(), func() time.Time { return now })
+	repo := boundedCacheRepo(t)
+
+	for i := 0; i < 10; i++ {
+		if _, err := c.ListMergedChanges(context.Background(), repo, fmt.Sprintf("feature/b%d", i), "", provider.Page{Number: 1, Size: 30}); err != nil {
+			t.Fatalf("target %d: %v", i, err)
+		}
+		now = now.Add(2 * ScanCacheTTL)
+	}
+	c.mu.Lock()
+	n := len(c.scans)
+	c.mu.Unlock()
+	if n != 1 {
+		t.Errorf("scan cache holds %d expired entries, want only the newest", n)
+	}
+}

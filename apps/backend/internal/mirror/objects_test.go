@@ -20,7 +20,7 @@ func TestObjectReader(t *testing.T) {
 	merge := src.MergeNoFF("feat", "merge feat")
 	src.Push()
 
-	runner, err := gitx.NewExecRunner(testLogger(), gitx.Options{CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	runner, err := gitx.NewExecRunner(testLogger(), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestExistsAbsentObjectReturnsFalseNoError(t *testing.T) {
 	src := testutilRepo(t)
 	src.Push()
 
-	runner, err := gitx.NewExecRunner(testLogger(), gitx.Options{CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	runner, err := gitx.NewExecRunner(testLogger(), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}

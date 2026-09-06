@@ -49,6 +49,11 @@ func buildDeps(application *app.App, ctx context.Context) api.Deps {
 		BuildContext:    ctx,
 		Store:           application.Store,
 		CleanupInterval: application.Config.CleanupInterval,
+		// The sweeper goroutine NewRouter starts keeps calling git after the
+		// HTTP server has drained. Registering it on the App's WaitGroup is
+		// what makes App.Close wait for it before it removes the git runner's
+		// shared HOME and hooks directories.
+		Background: application.Background,
 	}
 }
 
@@ -79,7 +84,15 @@ func serve(ctx context.Context, env []string) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = application.Close() }()
+	// Close drains in-flight builds and the sweeper before it removes the git
+	// runner's temporary directories. A drain timeout or a cleanup failure is
+	// logged rather than discarded: it means git work may have raced the
+	// removal, which is exactly the condition an operator needs to see.
+	defer func() {
+		if err := application.Close(); err != nil {
+			application.Log.Error("shutdown cleanup", slog.String("error", err.Error()))
+		}
+	}()
 
 	handler := api.NewRouter(buildDeps(application, ctx))
 

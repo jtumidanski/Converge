@@ -26,7 +26,7 @@ func logger() *slog.Logger {
 func TestCreateCleanupRealGit(t *testing.T) {
 	src := testutil.NewRepo(t)
 	base := src.Head()
-	runner, err := gitx.NewExecRunner(logger(), gitx.Options{CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	runner, err := gitx.NewExecRunner(logger(), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestNewResolvesSymlinkedRoot(t *testing.T) {
 	// WORKSPACE_ROOT, not just RemoveDir.
 	src := testutil.NewRepo(t)
 	base := src.Head()
-	runner, rerr := gitx.NewExecRunner(logger(), gitx.Options{CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	runner, rerr := gitx.NewExecRunner(logger(), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
 	if rerr != nil {
 		t.Fatal(rerr)
 	}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -156,10 +157,12 @@ func (nopCleaner) RemoveDir(context.Context, string) error        { return nil }
 func TestBuildDepsWiresConfiguredCleanupIntervalAndStore(t *testing.T) {
 	store := session.NewStore(t.TempDir(), time.Hour, nopCleaner{}, slog.Default(), time.Now)
 	wantInterval := 7 * time.Minute
+	background := &sync.WaitGroup{}
 	application := &app.App{
-		Config: config.Config{CleanupInterval: wantInterval},
-		Log:    slog.Default(),
-		Store:  store,
+		Config:     config.Config{CleanupInterval: wantInterval},
+		Log:        slog.Default(),
+		Store:      store,
+		Background: background,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -177,6 +180,11 @@ func TestBuildDepsWiresConfiguredCleanupIntervalAndStore(t *testing.T) {
 	}
 	if deps.BuildContext != ctx {
 		t.Errorf("Deps.BuildContext = %v, want the server's lifetime ctx %v", deps.BuildContext, ctx)
+	}
+	// Without this, NewRouter tracks the sweeper on a WaitGroup nobody waits
+	// on and App.Close removes the git directories while it is still running.
+	if deps.Background != background {
+		t.Errorf("Deps.Background = %v, want the application's WaitGroup %v", deps.Background, background)
 	}
 }
 

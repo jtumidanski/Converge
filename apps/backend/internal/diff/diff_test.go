@@ -32,7 +32,7 @@ func TestSummarizeWriteAndFileContent(t *testing.T) {
 	src.Git("commit", "-m", "binary")
 	head := src.Head()
 
-	runner, err := gitx.NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), gitx.Options{CommandTimeout: 30 * time.Second})
+	runner, err := gitx.NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestFileContentTruncates(t *testing.T) {
 	base := src.Head()
 	big := strings.Repeat("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n", 20000) // ~1.28 MiB
 	src.Commit("big.txt", big, "big")
-	runner, _ := gitx.NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), gitx.Options{CommandTimeout: 30 * time.Second})
+	runner, _ := gitx.NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second})
 	defer runner.Close()
 	fd, err := FileContent(context.Background(), runner, src.Work, base, src.Head(), FileSummary{Path: "big.txt", Status: StatusAdded})
 	// The fixture content is pure ASCII, so every byte is a rune boundary
@@ -141,7 +141,7 @@ func TestFileContentTruncatesOnRuneBoundary(t *testing.T) {
 	// split either way MaxFileDiffBytes lands.
 	big := strings.Repeat("é", 700000)
 	src.Commit("big.txt", big, "big")
-	runner, _ := gitx.NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), gitx.Options{CommandTimeout: 30 * time.Second})
+	runner, _ := gitx.NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second})
 	defer runner.Close()
 	fd, err := FileContent(context.Background(), runner, src.Work, base, src.Head(), FileSummary{Path: "big.txt", Status: StatusAdded})
 	if err != nil {
@@ -173,7 +173,7 @@ func TestSummarizeSpacesAndDeletion(t *testing.T) {
 	src.Git("commit", "-m", "remove doomed")
 	head := src.Head()
 
-	runner, err := gitx.NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), gitx.Options{CommandTimeout: 30 * time.Second})
+	runner, err := gitx.NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestSummarizeEmptyDiff(t *testing.T) {
 	src := testutil.NewRepo(t)
 	head := src.Head()
 
-	runner, err := gitx.NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), gitx.Options{CommandTimeout: 30 * time.Second})
+	runner, err := gitx.NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

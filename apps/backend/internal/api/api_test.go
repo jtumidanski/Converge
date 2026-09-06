@@ -56,7 +56,7 @@ func newAPIFixture(t *testing.T) *apiFixture {
 	src.Push()
 
 	log := testLogger()
-	runner, err := gitx.NewExecRunner(log, gitx.Options{CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	runner, err := gitx.NewExecRunner(log, gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,7 +449,7 @@ func TestProviderErrorsMapToStatuses(t *testing.T) {
 func TestNewRouterStartsAndStopsSweeper(t *testing.T) {
 	log := testLogger()
 	registry := provider.NewRegistry()
-	runner, err := gitx.NewExecRunner(log, gitx.Options{CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	runner, err := gitx.NewExecRunner(log, gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}

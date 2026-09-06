@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jtumidanski/converge/internal/diff"
@@ -43,6 +44,13 @@ type Deps struct {
 	SessionTTL          time.Duration
 	MaxConcurrentBuilds int
 	Now                 func() time.Time
+
+	// Background, when set, tracks every goroutine StartBuild launches so a
+	// shutdown can wait for in-flight builds before the shared git HOME and
+	// hooks directories are removed out from under them. NewService
+	// substitutes a private WaitGroup when it is nil, so callers that do not
+	// manage shutdown (tests, the one-shot CLI) need not supply one.
+	Background *sync.WaitGroup
 }
 
 // Service orchestrates reconstruction: validate, resolve, apply, diff.
@@ -64,6 +72,9 @@ func NewService(d Deps) *Service {
 	}
 	if d.MaxConcurrentBuilds <= 0 {
 		d.MaxConcurrentBuilds = defaultMaxConcurrentBuilds
+	}
+	if d.Background == nil {
+		d.Background = &sync.WaitGroup{}
 	}
 	return &Service{
 		deps:     d,
@@ -157,7 +168,11 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (session.Session, 
 // Shutdown cancels the lifetime context so in-flight builds stop promptly;
 // the next startup's LoadAll records them as INTERRUPTED.
 func (s *Service) StartBuild(ctx context.Context, id string) {
+	// Registered before the goroutine starts: a Wait that happens between the
+	// call and the goroutine's first statement must still see this build.
+	s.deps.Background.Add(1)
 	go func() {
+		defer s.deps.Background.Done()
 		// Waiting for a slot is cancellable: on shutdown a queued build must
 		// drain instead of acquiring a slot only to run a pipeline whose
 		// context is already dead. A session that never starts stays CREATING,

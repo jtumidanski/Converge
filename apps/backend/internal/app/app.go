@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jtumidanski/converge/internal/config"
@@ -27,6 +29,20 @@ import (
 // MinGitVersion is required for `cherry-pick --empty=keep`.
 var MinGitVersion = "2.45"
 
+// backgroundDrainTimeout bounds how long Close waits for background work
+// (asynchronous builds, the session sweeper) to stop. Those goroutines keep
+// running git after the HTTP server has drained, and Close deletes the git
+// runner's shared HOME and hooks directories, so removing them first would
+// pull the environment out from under a live git process. It is a var only so
+// tests can shorten it; production never reassigns it.
+var backgroundDrainTimeout = 20 * time.Second
+
+// ErrBackgroundDrainTimeout reports that background work was still running
+// when Close gave up waiting. Close then proceeds with cleanup regardless --
+// a shutdown must finish -- so this error is the caller's only signal that
+// the removal raced live git commands.
+var ErrBackgroundDrainTimeout = errors.New("background work did not stop before shutdown")
+
 // App holds every wired collaborator.
 type App struct {
 	Config     config.Config
@@ -37,14 +53,42 @@ type App struct {
 	Workspaces *workspace.Manager
 	Store      *session.Store
 	Service    *review.Service
+
+	// Background tracks every goroutine that keeps using the git runner after
+	// the HTTP server has drained: the asynchronous builds started by
+	// review.Service and the session sweeper started by api.NewRouter. Wire it
+	// into api.Deps.Background so Close covers the sweeper too.
+	Background *sync.WaitGroup
 }
 
-// Close releases the git runner's temporary directories.
+// Close waits for background work to stop, then releases the git runner's
+// temporary directories. Both failures are reported: a drain timeout is
+// joined with any cleanup error rather than replaced by it.
 func (a *App) Close() error {
-	if a.Runner != nil {
-		return a.Runner.Close()
+	var errs []error
+	if a.Background != nil && !waitTimeout(a.Background, backgroundDrainTimeout) {
+		errs = append(errs, ErrBackgroundDrainTimeout)
 	}
-	return nil
+	if a.Runner != nil {
+		if err := a.Runner.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// waitTimeout reports whether wg reached zero within d.
+func waitTimeout(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() { defer close(done); wg.Wait() }()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 // redactingHandler scrubs configured secrets from every logged value.
@@ -221,17 +265,19 @@ func New(ctx context.Context, env []string) (*App, error) {
 		_ = runner.Close()
 		return nil, err
 	}
+	background := &sync.WaitGroup{}
 	cleaner := review.NewCleaner(mirrors, workspaces, log)
 	store := session.NewStore(workspaces.Root(), cfg.SessionTTL, cleaner, log, time.Now)
 	service := review.NewService(review.Deps{
 		Providers: registry, Mirrors: mirrors, Workspaces: workspaces, Store: store,
 		Applicator: review.NewCherryPickApplicator(runner, log), Runner: runner, Log: log,
 		SessionTTL: cfg.SessionTTL, MaxConcurrentBuilds: cfg.MaxConcurrentBuilds, Now: time.Now,
+		Background: background,
 	})
 	if err := store.LoadAll(ctx); err != nil {
 		_ = runner.Close()
 		return nil, err
 	}
 	log.Info("converge starting", slog.String("git_version", version), slog.Int("providers", len(cfg.Providers)))
-	return &App{Config: cfg, Log: log, Runner: runner, Registry: registry, Mirrors: mirrors, Workspaces: workspaces, Store: store, Service: service}, nil
+	return &App{Config: cfg, Log: log, Runner: runner, Registry: registry, Mirrors: mirrors, Workspaces: workspaces, Store: store, Service: service, Background: background}, nil
 }

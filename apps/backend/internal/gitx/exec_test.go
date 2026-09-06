@@ -16,7 +16,7 @@ func newRunner(t *testing.T) *ExecRunner {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
-	r, err := NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), Options{CloneTimeout: time.Minute, CommandTimeout: 10 * time.Second, Secrets: []string{"s3cret"}})
+	r, err := NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), Options{AllowFileProtocol: true, CloneTimeout: time.Minute, CommandTimeout: 10 * time.Second, Secrets: []string{"s3cret"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,6 +36,36 @@ func TestExecRunnerRunsGitWithIsolatedEnv(t *testing.T) {
 	res, err = r.Run(context.Background(), Spec{Args: []string{"var", "GIT_COMMITTER_IDENT"}, Category: CategoryQuery})
 	if err != nil || !strings.HasPrefix(string(res.Stdout), "Converge Review <converge@localhost>") {
 		t.Errorf("ident: err=%v out=%s", err, res.Stdout)
+	}
+}
+
+// The file transport is disabled by git for CVE-2022-39253. A runner built
+// the way production builds it (Options.AllowFileProtocol left false) must not
+// re-enable it; only a runner that explicitly opts in may.
+func TestExecRunnerFileProtocolIsOptIn(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	read := func(t *testing.T, opts Options) (string, error) {
+		t.Helper()
+		r, err := NewExecRunner(slog.New(slog.NewTextHandler(os.Stderr, nil)), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = r.Close() })
+		res, err := r.Run(context.Background(), Spec{Args: []string{"config", "--get", "protocol.file.allow"}, Category: CategoryQuery})
+		return strings.TrimSpace(string(res.Stdout)), err
+	}
+
+	out, err := read(t, Options{CommandTimeout: 10 * time.Second})
+	var ee *ExitError
+	if !errors.As(err, &ee) || out != "" {
+		t.Errorf("production runner leaks protocol.file.allow: out=%q err=%v", out, err)
+	}
+
+	out, err = read(t, Options{CommandTimeout: 10 * time.Second, AllowFileProtocol: true})
+	if err != nil || out != "always" {
+		t.Errorf("opted-in runner: out=%q err=%v", out, err)
 	}
 }
 

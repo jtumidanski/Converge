@@ -13,7 +13,7 @@ import (
 
 func newApplicator(t *testing.T) (*CherryPickApplicator, *gitx.ExecRunner) {
 	t.Helper()
-	runner, err := gitx.NewExecRunner(testLog(), gitx.Options{CommandTimeout: 30 * time.Second})
+	runner, err := gitx.NewExecRunner(testLog(), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

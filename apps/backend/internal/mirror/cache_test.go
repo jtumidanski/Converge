@@ -90,7 +90,7 @@ func TestEnsureClonesThenUpdates(t *testing.T) {
 
 func TestEnsureSerialisesConcurrentCallsOnSameMirror(t *testing.T) {
 	src := testutil.NewRepo(t)
-	runner, err := gitx.NewExecRunner(testLogger(), gitx.Options{CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	runner, err := gitx.NewExecRunner(testLogger(), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestEnsureSerialisesConcurrentCallsOnSameMirror(t *testing.T) {
 
 func TestEnsureRealGitNoCredentialInRemote(t *testing.T) {
 	src := testutil.NewRepo(t)
-	runner, err := gitx.NewExecRunner(testLogger(), gitx.Options{CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	runner, err := gitx.NewExecRunner(testLogger(), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}

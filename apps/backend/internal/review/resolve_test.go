@@ -22,7 +22,7 @@ import (
 
 func newExecRunnerForTest(t *testing.T) *gitx.ExecRunner {
 	t.Helper()
-	runner, err := gitx.NewExecRunner(testLog(), gitx.Options{CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	runner, err := gitx.NewExecRunner(testLog(), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func newResolveFixture(t *testing.T) *resolveFixture {
 	squashSHA := src.Squash("feat/b", "Squash #2")
 	src.Push()
 
-	runner, err := gitx.NewExecRunner(testLog(), gitx.Options{CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	runner, err := gitx.NewExecRunner(testLog(), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}

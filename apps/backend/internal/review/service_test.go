@@ -159,7 +159,7 @@ func newServiceFixtureWith(t *testing.T, maxConcurrentBuilds int) *serviceFixtur
 	src.Commit("unrelated.txt", "u2\n", "unrelated after")
 	src.Push()
 
-	runner, err := gitx.NewExecRunner(testLog(), gitx.Options{CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	runner, err := gitx.NewExecRunner(testLog(), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}

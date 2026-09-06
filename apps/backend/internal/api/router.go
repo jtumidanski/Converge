@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/jtumidanski/converge/internal/jsonapi"
@@ -34,6 +35,11 @@ type Deps struct {
 	// tests never leak one.
 	Store           *session.Store
 	CleanupInterval time.Duration
+
+	// Background, when set, tracks the sweeper goroutine so a shutdown can
+	// wait for it to return before the shared git directories it depends on
+	// are removed. NewRouter substitutes a private WaitGroup when it is nil.
+	Background *sync.WaitGroup
 }
 
 type server struct {
@@ -51,8 +57,15 @@ func NewRouter(d Deps) http.Handler {
 	if buildCtx == nil {
 		buildCtx = context.Background()
 	}
+	if d.Background == nil {
+		d.Background = &sync.WaitGroup{}
+	}
 	if d.Store != nil && d.CleanupInterval > 0 {
-		go d.Store.RunSweeper(buildCtx, d.CleanupInterval)
+		d.Background.Add(1)
+		go func() {
+			defer d.Background.Done()
+			d.Store.RunSweeper(buildCtx, d.CleanupInterval)
+		}()
 	}
 	s := &server{deps: d, buildCtx: buildCtx}
 	mux := http.NewServeMux()

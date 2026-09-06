@@ -20,7 +20,7 @@ import (
 func realObjects(t *testing.T, r *testutil.Repo) mirror.ObjectReader {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	runner, err := gitx.NewExecRunner(log, gitx.Options{CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	runner, err := gitx.NewExecRunner(log, gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}

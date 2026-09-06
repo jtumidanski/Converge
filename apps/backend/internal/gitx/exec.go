@@ -25,6 +25,14 @@ type Options struct {
 	CloneTimeout   time.Duration // default for clone/fetch categories
 	CommandTimeout time.Duration // default for everything else
 	Secrets        []string      // scrubbed from logged stderr
+
+	// AllowFileProtocol adds `-c protocol.file.allow=always` to every git
+	// invocation. Git disabled that transport by default for CVE-2022-39253
+	// (a malicious repository can make a file-protocol clone execute code from
+	// the source tree), so production MUST leave this false: the server only
+	// ever talks to http(s) remotes. It exists solely for the test harness,
+	// which clones `file://` fixtures through this same runner.
+	AllowFileProtocol bool
 }
 
 // ExecRunner runs the real git binary with an isolated environment.
@@ -102,11 +110,14 @@ func (r *ExecRunner) timeoutFor(s Spec) time.Duration {
 func (r *ExecRunner) Run(ctx context.Context, s Spec) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.timeoutFor(s))
 	defer cancel()
-	args := append([]string{
+	prefix := []string{
 		"-c", "core.hooksPath=" + r.hooksDir,
 		"-c", "commit.gpgsign=false",
-		"-c", "protocol.file.allow=always",
-	}, s.Args...)
+	}
+	if r.opts.AllowFileProtocol {
+		prefix = append(prefix, "-c", "protocol.file.allow=always")
+	}
+	args := append(prefix, s.Args...)
 	cmd := exec.CommandContext(ctx, r.gitPath, args...)
 	cmd.Dir = s.Dir
 	cmd.Env = append(r.baseEnv(), s.Env...)

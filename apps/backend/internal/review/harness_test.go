@@ -31,7 +31,7 @@ type harness struct {
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	src := testutil.NewRepo(t)
-	runner, err := gitx.NewExecRunner(testLog(), gitx.Options{CommandTimeout: time.Minute, CloneTimeout: 2 * time.Minute})
+	runner, err := gitx.NewExecRunner(testLog(), gitx.Options{AllowFileProtocol: true, CommandTimeout: time.Minute, CloneTimeout: 2 * time.Minute})
 	if err != nil {
 		t.Fatal(err)
 	}

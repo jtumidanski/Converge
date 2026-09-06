@@ -35,6 +35,34 @@ type scanSnapshot struct {
 	capped   bool
 }
 
+// makeScanRoomLocked bounds c.scans to MaxScanCacheEntries before a new entry
+// for key is stored. The cache key embeds the caller-supplied target branch,
+// so an unbounded map is remotely growable. Expired entries go first; if that
+// is not enough, the oldest live entry is evicted. Ties on fetchedAt are
+// broken by key so eviction never depends on Go's map iteration order.
+// c.mu must be held.
+func (c *Client) makeScanRoomLocked(key string) {
+	if _, exists := c.scans[key]; exists {
+		return // replacing an expired entry in place; the map does not grow
+	}
+	now := c.now()
+	for k, e := range c.scans {
+		if now.Sub(e.fetchedAt) > ScanCacheTTL {
+			delete(c.scans, k)
+		}
+	}
+	for len(c.scans) >= MaxScanCacheEntries {
+		oldestKey := ""
+		var oldestAt time.Time
+		for k, e := range c.scans {
+			if oldestKey == "" || e.fetchedAt.Before(oldestAt) || (e.fetchedAt.Equal(oldestAt) && k < oldestKey) {
+				oldestKey, oldestAt = k, e.fetchedAt
+			}
+		}
+		delete(c.scans, oldestKey)
+	}
+}
+
 // ensureScanned returns a snapshot of merged PRs for (repo, target), fetching
 // provider pages until at least `need` items are collected, the provider runs
 // out, or MaxScanPages is hit. need < 0 means "scan until exhausted or capped".
@@ -44,6 +72,7 @@ func (c *Client) ensureScanned(ctx context.Context, repo provider.Repository, ta
 	defer c.mu.Unlock()
 	entry := c.scans[key]
 	if entry == nil || c.now().Sub(entry.fetchedAt) > ScanCacheTTL {
+		c.makeScanRoomLocked(key)
 		entry = &scanEntry{nextPage: 1, fetchedAt: c.now()}
 		c.scans[key] = entry
 	}

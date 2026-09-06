@@ -24,6 +24,10 @@ const (
 	MaxScanPages = 10
 	// ScanCacheTTL is how long a scanned page set is reused before refetching.
 	ScanCacheTTL = 60 * time.Second
+	// MaxScanCacheEntries bounds how many (repo, target) page sets are kept.
+	// The cache key includes the caller-supplied ?target= branch, so without a
+	// cap a client could grow it without limit by varying that parameter.
+	MaxScanCacheEntries = 64
 	// MaxPRCommits bounds how many commits GetChangeCommits will collect.
 	MaxPRCommits = 250
 
