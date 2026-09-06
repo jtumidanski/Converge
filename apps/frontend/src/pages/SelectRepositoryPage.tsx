@@ -61,7 +61,12 @@ export function SelectRepositoryPage() {
         <>
           <RepositoryList
             repositories={repositories.data?.items ?? []}
-            loading={repositories.isLoading}
+            // A query disabled by `enabled: Boolean(providerId)` reports
+            // isLoading=false with data=undefined, so without the second term
+            // the list would claim the token sees no repositories before any
+            // request was issued -- transiently on every load, and forever
+            // when no provider is configured.
+            loading={repositories.isLoading || !providerId}
             onSelect={goToChanges}
           />
           <Pagination

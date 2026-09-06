@@ -130,7 +130,11 @@ export function SelectChangesPage() {
       ) : (
         <ChangeTable
           changes={changes.data?.items ?? []}
-          loading={changes.isLoading}
+          // The changes query is disabled until the repository lookup settles,
+          // and a disabled query reports isLoading=false with data=undefined.
+          // Without the second term the table claims "No merged PRs/MRs" on
+          // the first paint, before any changes request has been issued.
+          loading={changes.isLoading || repositoryQuery.isPending}
           isSelected={selection.isSelected}
           onToggle={selection.toggle}
         />

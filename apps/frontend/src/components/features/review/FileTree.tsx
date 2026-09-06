@@ -52,7 +52,7 @@ export function FileTree({ files, selectedPath, onSelect }: FileTreeProps) {
                     aria-current={active ? "true" : undefined}
                     onClick={() => onSelect(path)}
                     className={cn(
-                      "flex w-full items-center justify-between gap-2 rounded px-2 py-1 text-left text-sm",
+                      "flex w-full cursor-pointer items-center justify-between gap-2 rounded px-2 py-1 text-left text-sm",
                       active ? "bg-accent text-accent-foreground" : "hover:bg-muted",
                     )}
                   >

@@ -120,6 +120,25 @@ describe("SelectRepositoryPage", () => {
     expect(screen.queryByText(/no repositories/i)).not.toBeInTheDocument();
   });
 
+  // A disabled React Query reports isLoading=false with data=undefined, so a
+  // component that only checks isLoading renders its empty state having never
+  // issued a request. Until a provider is chosen the repositories query is
+  // disabled, and "This token cannot see any repositories" is a false claim.
+  it("does not claim the token sees no repositories before a provider is known", () => {
+    seedProviders();
+    renderWithProviders(<SelectRepositoryPage />);
+    expect(screen.queryByText(/cannot see any repositories/i)).not.toBeInTheDocument();
+  });
+
+  it("does not claim the token sees no repositories when no provider is configured", async () => {
+    server.use(http.get("/api/providers", () => HttpResponse.json(listDoc([]))));
+    renderWithProviders(<SelectRepositoryPage />);
+    // The picker's label replaces its skeleton once the providers query
+    // settles, so this waits for the steady state rather than a first paint.
+    expect(await screen.findByText("Provider")).toBeInTheDocument();
+    expect(screen.queryByText(/cannot see any repositories/i)).not.toBeInTheDocument();
+  });
+
   it("retries the repository fetch when Try again is pressed after a failure", async () => {
     seedProviders();
     let calls = 0;

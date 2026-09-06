@@ -225,4 +225,14 @@ describe("SelectChangesPage", () => {
     await waitFor(() => expect(screen.getByText(/page 1/i)).toBeInTheDocument());
     expect(previous).toBeDisabled();
   });
+
+  // The changes query stays disabled until the repository lookup settles, and
+  // a disabled query reports isLoading=false with data=undefined. Without
+  // treating that as loading, the first paint asserts "No merged PRs/MRs"
+  // before any changes request has even been issued.
+  it("does not claim there are no merged changes before the first request settles", () => {
+    seed();
+    renderWithProviders(<SelectChangesPage />, { route });
+    expect(screen.queryByText(/no merged/i)).not.toBeInTheDocument();
+  });
 });
