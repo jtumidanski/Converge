@@ -77,7 +77,10 @@ func (a *App) Close() error {
 	return errors.Join(errs...)
 }
 
-// waitTimeout reports whether wg reached zero within d.
+// waitTimeout reports whether wg reached zero within d. On a timeout the
+// helper goroutine stays parked in wg.Wait until the background work finally
+// stops; that is deliberate, and harmless because Close runs once per process
+// as it exits.
 func waitTimeout(wg *sync.WaitGroup, d time.Duration) bool {
 	done := make(chan struct{})
 	go func() { defer close(done); wg.Wait() }()
