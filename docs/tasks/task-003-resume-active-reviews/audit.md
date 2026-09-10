@@ -435,3 +435,54 @@ None. Every FE-01 … FE-17 check is PASS or N/A with file:line evidence above.
 - **FE-02n** — `ResumeReviewRow.tsx:101`: conditional class should route through `cn()`.
 - **T-2 / T-3** — `SelectRepositoryPage.tsx:58-60` untested; `ResumeReviewList.test.tsx:53`
   brittle `getByText("2")`.
+
+---
+
+# Residual Finding After the Fix Wave
+
+The final review's fix wave (`6d72c29`) was re-reviewed against the full findings
+list. Every finding was verdicted ADDRESSED except one, recorded here so it is not
+lost with the scratch workspace.
+
+## X-1 (partial) — focus restoration does not survive the discard-failure path
+
+**Status:** open, parked. Not merge-blocking.
+
+**What is fixed.** `ResumeReviewRow.tsx` now restores focus to the row's own discard
+trigger when the two-step confirm collapses. The **Cancel** path is solid and is
+covered by a test that fails without the fix.
+
+**What is not.** The **discard-failure** path — the scenario the finding named — is
+still not reliably fixed in a real browser. The re-reviewer traced it through the
+installed `@tanstack/query-core`: `Mutation.execute()` dispatches `pending`
+synchronously, but `notifyManager.schedule` defers the observer notification (the
+parent's `pending` prop update) via `setTimeout(fn, 0)`. So the confirm area
+collapses and the effect focuses the still-enabled trigger in one macrotask, and the
+parent's `pending=true` lands in the next one, disabling the button that now holds
+focus. Real browsers blur a focused control that becomes non-focusable; when
+`pending` later returns to `false`, nothing re-focuses it, because the effect only
+fires on a `confirming` transition and that transition does not recur.
+
+**Why the tests do not catch it.** jsdom does not blur a focused element when it
+becomes `disabled` (verified directly: `doc.activeElement` is unchanged after setting
+`disabled = true`). The suite is therefore green against a defect that would appear in
+a real browser. No existing test asserts focus on this path.
+
+**Why it is parked rather than fixed.** It is a keyboard-focus regression confined to
+a failed-discard error path, it blocks nothing downstream, and the honest fix is not
+a one-liner: it needs focus restoration keyed on the `pending` false-edge rather than
+the `confirming` transition, and a test that can actually observe the defect — which
+jsdom cannot, so it needs either a browser-mode test or an explicit simulation of the
+blur-on-disable behaviour. That is follow-up work with its own design question, not a
+tail-end patch on a branch that is otherwise clean.
+
+**Suggested follow-up.** Restore focus when `pending` goes true→false while the row is
+still mounted, and cover it with a test that reproduces the blur-on-disable behaviour
+rather than relying on jsdom's lenience.
+
+## Minor, accepted
+
+`ResumeReviewRow.tsx` places `aria-busy` on a control that is simultaneously
+`disabled`. Some assistive technology treats disabled elements as removed from the
+interaction tree, so the busy announcement may not always reach the user. This
+matches what was asked for and is not a regression.
