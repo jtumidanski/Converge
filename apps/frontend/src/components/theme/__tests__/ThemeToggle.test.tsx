@@ -17,6 +17,26 @@ describe("ThemeToggle", () => {
     expect(screen.getByRole("button", { name: /change theme/i })).toBeInTheDocument();
   });
 
+  it.each(["light", "dark", "system"] as const)(
+    "names the current %s preference in the trigger's accessible name",
+    (preference) => {
+      localStorage.setItem(THEME_STORAGE_KEY, preference);
+      renderWithProviders(<ThemeToggle />);
+      expect(
+        screen.getByRole("button", { name: `Change theme (currently ${preference})` }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("names the preference, not the resolved theme, under System", () => {
+    setSystemDark(true);
+    localStorage.setItem(THEME_STORAGE_KEY, "system");
+    renderWithProviders(<ThemeToggle />);
+    expect(
+      screen.getByRole("button", { name: "Change theme (currently system)" }),
+    ).toBeInTheDocument();
+  });
+
   it("offers exactly three modes", async () => {
     const user = userEvent.setup();
     renderWithProviders(<ThemeToggle />);

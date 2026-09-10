@@ -89,10 +89,61 @@ observations from the design's §4.9 audit are noted here for a future task,
 not addressed by Task 10:
 
 - `--destructive` on dark (`oklch(0.704 0.191 22.216)`) rendered on
-  `oklch(0.145 0 0)` (dark background) — contrast should be re-measured
-  against WCAG AA in a future pass.
+  `oklch(0.145 0 0)` (dark background) — **now measured, see §Contrast
+  measurements below: passes AA.**
 - `--muted-foreground` (`oklch(0.708 0 0)`) on `--muted`
-  (`oklch(0.269 0 0)`) — same caveat.
+  (`oklch(0.269 0 0)`) — **now measured, see below: passes AA.**
+
+## Contrast measurements (computed from the `oklch()` token definitions)
+
+These ratios were **computed, not browser-measured**: each `oklch()` value in
+`apps/frontend/src/index.css` was converted to sRGB, Tailwind's `/N` opacity
+was composited over the surface behind it, and the WCAG 2.x relative-luminance
+contrast formula applied. They are token-level figures; item 9 of the manual
+checklist below remains open for a real in-browser confirmation.
+
+### Dark mode — all pairs pass WCAG AA (≥ 4.5:1)
+
+| Pair | Foreground | Background | Ratio |
+|---|---|---|---|
+| Destructive `Badge` | `--destructive` `oklch(0.704 0.191 22.216)` | `dark:bg-destructive/20` over `--card` `oklch(0.205 0 0)` | **4.63:1** |
+| `ReviewErrorPanel` body text | `--foreground` `oklch(0.985 0 0)` | `bg-destructive/5` over `--background` `oklch(0.145 0 0)` | **18.17:1** |
+| Muted text on muted surface | `--muted-foreground` `oklch(0.708 0 0)` | `--muted` `oklch(0.269 0 0)` | **5.83:1** |
+
+The destructive `Badge` figure uses `--card` as the surface behind the 20%
+destructive wash, which is the lower of the two realistic placements; over
+`--background` the same pair measures 5.30:1. Both pass.
+
+### Pre-existing, out of scope: two light-mode pairs below 4.5:1
+
+The same computation found two pairs under AA. Both are **light mode**, both
+come from token values that predate this branch, and neither is touched by
+this task (repaletting is a stated non-goal). Recorded for a future task; **not
+caused by, and not fixed by, this branch.**
+
+| Pair | Ratio |
+|---|---|
+| Light destructive `Badge`: `--destructive` `oklch(0.577 0.245 27.325)` on `bg-destructive/10` over `--background` | 3.99:1 |
+| Light `--muted-foreground` `oklch(0.556 0 0)` on `--muted` `oklch(0.97 0 0)` | 4.34:1 |
+
+## CI result for this branch
+
+All repository-root and frontend gates were run and are green:
+
+| Gate | Result |
+|---|---|
+| `make lint` | pass |
+| `make test` | pass — 193/193 frontend tests (163 before the boot-script behavioral and `ThemeToggle` label tests were added), 18 backend packages |
+| `make test-integration` | pass |
+| `make build` | pass |
+| `make docker-build` | pass |
+| `npm run lint` (`apps/frontend`) | pass |
+| `npm run format:check` (`apps/frontend`) | pass |
+| `npm test` (`apps/frontend`) | pass |
+| `npm run build` (`apps/frontend`) | pass |
+
+This records the automated gates only. It does not discharge any item in the
+manual checklist below.
 
 ## Step 3 — manual verification (NOT performed by the agent)
 
@@ -143,16 +194,17 @@ included so they can be run directly.
 9. **`ReviewErrorPanel` / destructive `Badge` contrast ≥ 4.5:1 in dark
    mode.** Using browser DevTools' contrast checker (or the accessibility
    inspector) on the rendered destructive text/background pair in dark
-   mode, record the actual measured ratio here once checked:
-   - `ReviewErrorPanel` text vs. its background: **not measured — record
-     ratio here**
-   - Destructive `Badge` text vs. its background: **not measured — record
-     ratio here**
+   mode, confirm the rendered pairs against the computed figures in
+   §"Contrast measurements" above:
+   - `ReviewErrorPanel` text vs. its background: computed **18.17:1**
+     (passes AA) — **browser confirmation still open**
+   - Destructive `Badge` text vs. its background: computed **4.63:1**
+     (passes AA) — **browser confirmation still open**
 
    These two spots are exactly where the follow-up token-value
    observations above (`--destructive` and `--muted-foreground`) would
    surface as a real contrast failure, so this check matters even though
-   the greps found nothing.
+   the greps found nothing and the computed ratios pass.
 
 None of the Step 3 items were fabricated as passing; they are recorded here
 as open checklist items pending a human running the app in an actual

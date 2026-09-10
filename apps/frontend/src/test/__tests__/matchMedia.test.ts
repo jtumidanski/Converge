@@ -26,8 +26,8 @@ describe("matchMedia stub", () => {
 
     expect(listener).toHaveBeenCalledTimes(1);
     const firstCall = listener.mock.calls[0];
-    expect(firstCall).toBeDefined();
-    expect(firstCall![0].matches).toBe(true);
+    if (!firstCall) throw new Error("the change listener was never called");
+    expect(firstCall[0].matches).toBe(true);
     expect(darkQueryListeners.count()).toBe(1);
   });
 

@@ -55,14 +55,12 @@ function diffFile(overrides: Partial<ReviewFileDiff["attributes"]> = {}): Review
 }
 
 describe("FileDiff", () => {
-  // NOTE: there is intentionally no test here that asserts on @pierre/diffs'
-  // rendered patch output. See the FileDiff.tsx comment and the task report:
-  // PatchDiff renders its content inside a <diffs-container> custom element's
-  // shadow DOM (not reflected by `.textContent` or Testing Library queries,
-  // by design — light-DOM APIs never see shadow-DOM content) and calls
-  // `ResizeObserver`, which jsdom does not implement. Polyfilling
-  // ResizeObserver would only prove the polyfill runs, not that the diff
-  // renders, so no shim was added.
+  // NOTE: `@pierre/diffs/react` is mocked at the top of this file, so these
+  // tests assert on what FileDiff *passes* to PatchDiff (via `lastOptions()`),
+  // never on the patch markup PatchDiff would render. That rendering lives in a
+  // <diffs-container> custom element's shadow DOM, which light-DOM Testing
+  // Library queries cannot see by design; asserting on it is the vendor's job,
+  // not ours.
 
   it("shows a binary file notice instead of the patch", () => {
     renderWithProviders(<FileDiff file={diffFile({ binary: true })} />);

@@ -11,10 +11,7 @@ describe("pre-paint theme boot script in index.html", () => {
   });
 
   it("validates the stored value against the three-mode allowlist", () => {
-    expect(html).toContain('pref !== "light"');
-    expect(html).toContain('pref !== "dark"');
-    expect(html).toContain('pref !== "system"');
-    expect(html).toContain('pref !== "light" && pref !== "dark" && pref !== "system"');
+    expect(html).toContain('stored === "light" || stored === "dark" || stored === "system"');
   });
 
   it("writes the dark class and color-scheme onto the document root", () => {
@@ -40,8 +37,12 @@ describe("pre-paint theme boot script in index.html", () => {
     expect(openingTag).not.toContain("async");
   });
 
-  it("guards against a throwing storage or matchMedia", () => {
-    expect(html).toContain("try {");
-    expect(html).toContain("} catch {");
+  it("guards the storage read, the OS query and the DOM write separately", () => {
+    const boot = html.slice(html.indexOf("<script>"), html.indexOf("</script>"));
+    // One coarse try/catch around the whole body would let a blocked
+    // localStorage skip the OS-preference branch. See bootThemeScript.behavior
+    // .test.ts for the executed proof; this is the structural guard.
+    expect(boot.match(/try \{/g)).toHaveLength(3);
+    expect(boot.match(/\} catch \{/g)).toHaveLength(3);
   });
 });

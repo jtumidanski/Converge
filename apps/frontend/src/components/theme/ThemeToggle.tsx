@@ -16,6 +16,9 @@ import { isThemePreference } from "@/lib/theme/types";
  * The trigger icon shows the *resolved* theme — what the app looks like right
  * now — while the checked item shows the *preference*. Those deliberately
  * differ under System.
+ *
+ * The accessible name carries the *preference* so a screen-reader user learns
+ * the current selection without opening the menu.
  */
 export function ThemeToggle() {
   const { preference, resolved, setPreference } = useTheme();
@@ -23,7 +26,7 @@ export function ThemeToggle() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" aria-label="Change theme">
+        <Button variant="ghost" size="icon" aria-label={`Change theme (currently ${preference})`}>
           {resolved === "dark" ? <MoonIcon /> : <SunIcon />}
         </Button>
       </DropdownMenuTrigger>
