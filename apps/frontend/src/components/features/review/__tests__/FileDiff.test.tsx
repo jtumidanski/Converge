@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { FileDiff } from "@/components/features/review/FileDiff";
+import { renderWithProviders } from "@/test/render";
 import type { ReviewFileDiff } from "@/types/models/reviewFile";
 
 function diffFile(overrides: Partial<ReviewFileDiff["attributes"]> = {}): ReviewFileDiff {
@@ -41,12 +42,12 @@ describe("FileDiff", () => {
   // renders, so no shim was added.
 
   it("shows a binary file notice instead of the patch", () => {
-    render(<FileDiff file={diffFile({ binary: true })} />);
+    renderWithProviders(<FileDiff file={diffFile({ binary: true })} />);
     expect(screen.getByText(/binary file changed/i)).toBeInTheDocument();
   });
 
   it("shows a truncation notice for a truncated diff", () => {
-    render(<FileDiff file={diffFile({ truncated: true })} />);
+    renderWithProviders(<FileDiff file={diffFile({ truncated: true })} />);
     expect(screen.getByText(/too large to display in full/i)).toBeInTheDocument();
   });
 });
