@@ -1,6 +1,28 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <script>
+      // Pre-paint theme application. This is a hand-inlined copy of resolveTheme
+      // and applyTheme from src/lib/theme/apply.ts, plus the storage key from
+      // src/lib/theme/types.ts. A module script always runs after first paint, so
+      // this cannot import them. Change one, change the other.
+      // src/__tests__/bootThemeScript.test.ts fails if they drift.
+      (function () {
+        try {
+          var pref = localStorage.getItem("converge.theme");
+          if (pref !== "light" && pref !== "dark" && pref !== "system") pref = "system";
+          var dark =
+            pref === "dark" ||
+            (pref === "system" &&
+              typeof window.matchMedia === "function" &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        } catch {
+          // Storage or matchMedia unavailable: leave the light default in place.
+        }
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Converge</title>
