@@ -1,8 +1,31 @@
 import { screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FileDiff } from "@/components/features/review/FileDiff";
+import { ThemeToggle } from "@/components/theme/ThemeToggle";
+import { THEME_STORAGE_KEY } from "@/lib/theme/types";
+import { setSystemDark } from "@/test/matchMedia";
 import { renderWithProviders } from "@/test/render";
 import type { ReviewFileDiff } from "@/types/models/reviewFile";
+
+const captured = vi.hoisted(() => ({ options: [] as Record<string, unknown>[] }));
+
+vi.mock("@pierre/diffs/react", () => ({
+  PatchDiff: (props: { options: Record<string, unknown> }) => {
+    captured.options.push(props.options);
+    return <div data-testid="patch-diff" />;
+  },
+}));
+
+beforeEach(() => {
+  captured.options.length = 0;
+});
+
+function lastOptions(): Record<string, unknown> {
+  const options = captured.options[captured.options.length - 1];
+  if (!options) throw new Error("PatchDiff was never rendered with options");
+  return options;
+}
 
 function diffFile(overrides: Partial<ReviewFileDiff["attributes"]> = {}): ReviewFileDiff {
   return {
@@ -49,5 +72,55 @@ describe("FileDiff", () => {
   it("shows a truncation notice for a truncated diff", () => {
     renderWithProviders(<FileDiff file={diffFile({ truncated: true })} />);
     expect(screen.getByText(/too large to display in full/i)).toBeInTheDocument();
+  });
+});
+
+describe("FileDiff theming", () => {
+  it("forwards the resolved light theme into PatchDiff options", () => {
+    renderWithProviders(<FileDiff file={diffFile()} />);
+    expect(lastOptions().themeType).toBe("light");
+    expect(lastOptions().theme).toEqual({ light: "pierre-light", dark: "pierre-dark" });
+  });
+
+  it("forwards dark when the preference is dark", () => {
+    localStorage.setItem(THEME_STORAGE_KEY, "dark");
+    renderWithProviders(<FileDiff file={diffFile()} />);
+    expect(lastOptions().themeType).toBe("dark");
+  });
+
+  it("forwards the resolved theme under system, never the literal system", () => {
+    setSystemDark(true);
+    localStorage.setItem(THEME_STORAGE_KEY, "system");
+    renderWithProviders(<FileDiff file={diffFile()} />);
+    expect(lastOptions().themeType).toBe("dark");
+    for (const options of captured.options) {
+      expect(options.themeType).not.toBe("system");
+    }
+  });
+
+  it("keeps the existing diff options alongside the theme", () => {
+    renderWithProviders(<FileDiff file={diffFile()} />);
+    expect(lastOptions()).toMatchObject({
+      diffStyle: "unified",
+      expandUnchanged: true,
+      collapsedContextThreshold: 8,
+      overflow: "scroll",
+    });
+  });
+
+  it("re-renders the diff with the new theme when the theme changes in place", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <>
+        <ThemeToggle />
+        <FileDiff file={diffFile()} />
+      </>,
+    );
+    expect(lastOptions().themeType).toBe("light");
+
+    await user.click(screen.getByRole("button", { name: /change theme/i }));
+    await user.click(await screen.findByRole("menuitemradio", { name: "Dark" }));
+
+    expect(lastOptions().themeType).toBe("dark");
   });
 });

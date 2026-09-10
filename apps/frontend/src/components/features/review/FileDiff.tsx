@@ -1,4 +1,5 @@
 import { PatchDiff } from "@pierre/diffs/react";
+import { useTheme } from "@/lib/theme/useTheme";
 import type { ReviewFileDiff } from "@/types/models/reviewFile";
 
 interface FileDiffProps {
@@ -11,6 +12,7 @@ interface FileDiffProps {
  */
 export function FileDiff({ file }: FileDiffProps) {
   const { binary, truncated, diff, path } = file.attributes;
+  const { resolved } = useTheme();
   if (binary) {
     return (
       <p className="rounded-md border border-border p-4 text-sm text-muted-foreground">
@@ -33,6 +35,11 @@ export function FileDiff({ file }: FileDiffProps) {
           expandUnchanged: true,
           collapsedContextThreshold: 8,
           overflow: "scroll",
+          // The resolved theme, never "system": "system" would make the diff
+          // follow the OS instead of the app, and suppresses the shadow-root
+          // color-scheme declaration that gives the diff correct scrollbars.
+          themeType: resolved,
+          theme: { light: "pierre-light", dark: "pierre-dark" },
         }}
       />
     </div>
