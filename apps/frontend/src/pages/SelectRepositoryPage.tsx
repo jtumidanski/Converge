@@ -1,13 +1,16 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
+import { toast } from "sonner";
 import { PageHeader } from "@/components/common/PageHeader";
 import { ErrorBanner } from "@/components/common/ErrorBanner";
 import { Pagination } from "@/components/common/Pagination";
 import { ProviderPicker } from "@/components/features/providers/ProviderPicker";
 import { RepositoryList } from "@/components/features/repositories/RepositoryList";
 import { ManualRepositoryForm } from "@/components/features/repositories/ManualRepositoryForm";
+import { ResumeReviewList } from "@/components/features/reviews/ResumeReviewList";
 import { useProviders } from "@/lib/hooks/api/useProviders";
 import { useRepositories } from "@/lib/hooks/api/useRepositories";
+import { useFinishReview, useReviews } from "@/lib/hooks/api/useReviews";
 import { messageFor } from "@/lib/api/errors";
 import { strings } from "@/lib/strings";
 import type { Repository } from "@/types/models/repository";
@@ -22,6 +25,22 @@ export function SelectRepositoryPage() {
   const providerId = selectedProviderId ?? providers.data?.[0]?.id;
   const repositories = useRepositories(providerId, { page });
 
+  const reviews = useReviews();
+  // Discard here and Finish Review on ReviewPage are the same backend
+  // operation (DELETE /api/reviews/{id}); this list simply calls it from
+  // outside the review. Unlike ReviewPage's closeReview it does not navigate --
+  // the reviewer stays on `/` and the mutation's onSettled invalidation of
+  // reviewKeys.lists() removes the row.
+  const discardReview = useFinishReview();
+
+  async function discard(id: string) {
+    try {
+      await discardReview.mutateAsync(id);
+    } catch (error: unknown) {
+      toast.error(messageFor(error, strings.reviewDiscardFailed));
+    }
+  }
+
   function goToChanges(repository: Repository) {
     if (!providerId) return;
     const search = new URLSearchParams({ provider: providerId, repo: repository.id });
@@ -33,6 +52,19 @@ export function SelectRepositoryPage() {
       <PageHeader
         title={strings.combinedReview}
         description={`Choose a ${strings.provider.toLowerCase()} and a ${strings.repository.toLowerCase()} to start.`}
+      />
+      <ResumeReviewList
+        reviews={reviews.data ?? []}
+        // isLoading, not isFetching: a background poll must not replace
+        // rendered rows with skeletons (FR-5.5).
+        loading={reviews.isLoading}
+        error={reviews.isError ? reviews.error : undefined}
+        onRetry={() => void reviews.refetch()}
+        // The mutation itself holds the in-flight variables, so there is no
+        // second source of truth to fall out of sync (design 2.3).
+        pendingId={discardReview.isPending ? discardReview.variables : undefined}
+        onResume={(id) => navigate(`/reviews/${id}`)}
+        onDiscard={(id) => void discard(id)}
       />
       {providers.isError ? (
         <ErrorBanner

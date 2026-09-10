@@ -13,7 +13,7 @@ interface ResumeReviewListProps {
   error?: unknown;
   onRetry: () => void;
   /** pendingId is the id of the review whose discard is in flight, if any. */
-  pendingId?: string;
+  pendingId?: string | undefined;
   onResume: (id: string) => void;
   onDiscard: (id: string) => void;
 }
