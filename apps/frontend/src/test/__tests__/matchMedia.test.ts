@@ -25,7 +25,9 @@ describe("matchMedia stub", () => {
     setSystemDark(true);
 
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener.mock.calls[0][0].matches).toBe(true);
+    const firstCall = listener.mock.calls[0];
+    expect(firstCall).toBeDefined();
+    expect(firstCall![0].matches).toBe(true);
     expect(darkQueryListeners.count()).toBe(1);
   });
 
