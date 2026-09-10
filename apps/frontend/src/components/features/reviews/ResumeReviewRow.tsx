@@ -112,10 +112,13 @@ export function ResumeReviewRow({ review, pending, onResume, onDiscard }: Resume
           <span className="mr-auto text-sm text-foreground">
             {strings.discardReview}: {repository} ({changeLabel})? {strings.discardConfirmSuffix}
           </span>
-          <Button variant="outline" size="sm" onClick={() => setConfirming(false)}>
+          {/* Focus the Cancel button, not the destructive one: a destructive action must not be
+              one keypress away. This prevents keyboard users from accidentally confirming via
+              key-repeat or double-tapping Enter. */}
+          <Button variant="outline" size="sm" autoFocus onClick={() => setConfirming(false)}>
             {strings.cancel}
           </Button>
-          <Button variant="destructive" size="sm" autoFocus onClick={confirmDiscard}>
+          <Button variant="destructive" size="sm" onClick={confirmDiscard}>
             {strings.discard}
           </Button>
         </div>
