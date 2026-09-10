@@ -8,6 +8,8 @@ VERSION   ?= $(shell $(ROOT)/tools/version.sh)
 GIT_SHA   ?= $(shell git rev-parse HEAD)
 LDFLAGS   := -s -w -X github.com/jtumidanski/converge/internal/buildinfo.Version=$(VERSION)
 IMAGE     ?= $(if $(IMAGE_REPOSITORY),$(IMAGE_REPOSITORY),$(if $(CI_REGISTRY_IMAGE),$(CI_REGISTRY_IMAGE),converge))
+# Docker repository names must be lowercase; GitHub owner/repo often is not.
+IMAGE_LC  := $(shell printf '%s' '$(IMAGE)' | tr '[:upper:]' '[:lower:]')
 PLATFORM  ?= linux/amd64
 NPM       := export NVM_DIR="$$HOME/.nvm" && [ -s "$$NVM_DIR/nvm.sh" ] && . "$$NVM_DIR/nvm.sh" >/dev/null && nvm use 22 >/dev/null; npm
 
@@ -39,9 +41,9 @@ docker-build: ## Build the container image
 	docker buildx build \
 		--platform $(PLATFORM) \
 		--build-arg VERSION=$(VERSION) \
-		--tag $(IMAGE):$(VERSION) \
-		--tag $(IMAGE):$(GIT_SHA) \
-		$(if $(filter 1,$(MAINLINE)),--tag $(IMAGE):latest,) \
+		--tag $(IMAGE_LC):$(VERSION) \
+		--tag $(IMAGE_LC):$(GIT_SHA) \
+		$(if $(filter 1,$(MAINLINE)),--tag $(IMAGE_LC):latest,) \
 		--load \
 		$(ROOT)
 

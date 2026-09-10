@@ -18,6 +18,9 @@ else
   exit 1
 fi
 
+# Docker repository names must be lowercase; must match the tags docker-build made.
+image="${image,,}"
+
 tags=("$image:$version" "$image:$git_sha")
 if [[ "${MAINLINE:-0}" == "1" ]]; then
   tags+=("$image:latest")
