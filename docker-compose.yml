@@ -1,0 +1,25 @@
+services:
+  converge:
+    image: ${IMAGE_REPOSITORY:-converge}:${VERSION:-latest}
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+    env_file:
+      - .env
+    ports:
+      - "${APP_PORT:-8080}:${APP_PORT:-8080}"
+    volumes:
+      - converge-repositories:/data/repositories
+      - converge-workspaces:/data/workspaces
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${APP_PORT:-8080}/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  converge-repositories:
+  converge-workspaces:

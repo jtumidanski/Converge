@@ -40,3 +40,10 @@ data/
 # Test artifacts
 apps/frontend/playwright-report/
 apps/frontend/test-results/
+
+# Built frontend embedded into the backend (rebuilt by make build)
+apps/backend/internal/ui/dist/*
+!apps/backend/internal/ui/dist/.gitkeep
+
+# Release artifacts
+/dist/
