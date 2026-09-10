@@ -26,8 +26,19 @@ export function useReview(id: string | undefined) {
   });
 }
 
+/**
+ * useReviews polls every 2 s while any listed review is still building, and
+ * stops once none is -- an idle root page issues no periodic requests (NFR-1).
+ */
 export function useReviews() {
-  return useQuery({ queryKey: reviewKeys.lists(), queryFn: () => reviewsService.list() });
+  return useQuery({
+    queryKey: reviewKeys.lists(),
+    queryFn: () => reviewsService.list(),
+    refetchInterval: (query) => {
+      const data = query.state.data as Review[] | undefined;
+      return data?.some((review) => !isTerminal(review.attributes.status)) ? 2000 : false;
+    },
+  });
 }
 
 export function useReviewFiles(id: string | undefined, enabled: boolean) {

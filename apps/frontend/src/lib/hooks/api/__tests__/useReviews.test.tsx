@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/api/errors";
-import { errorDoc, http, HttpResponse, oneDoc, server } from "@/test/server";
+import { errorDoc, http, HttpResponse, listDoc, oneDoc, server } from "@/test/server";
 import { queryWrapper } from "@/test/render";
 import {
   reviewKeys,
@@ -11,6 +11,7 @@ import {
   useReview,
   useReviewFile,
   useReviewFiles,
+  useReviews,
 } from "@/lib/hooks/api/useReviews";
 
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
@@ -223,4 +224,58 @@ describe("useInvalidateReviews", () => {
     expect(wrapper.client.getQueryState(reviewKeys.detail("abc12345"))?.isInvalidated).toBe(true);
     expect(wrapper.client.getQueryState(reviewKeys.lists())?.isInvalidated).toBe(true);
   });
+});
+
+describe("useReviews", () => {
+  it("polls while any listed review is CREATING and stops once none is", async () => {
+    let calls = 0;
+    server.use(
+      http.get("/api/reviews", () => {
+        calls += 1;
+        return HttpResponse.json(
+          listDoc([
+            oneDoc("reviews", "abc12345", reviewAttrs(calls < 2 ? "CREATING" : "READY")).data,
+          ]),
+        );
+      }),
+    );
+    const { result } = renderHook(() => useReviews(), { wrapper: queryWrapper() });
+    await waitFor(() => expect(result.current.data?.[0]?.attributes.status).toBe("CREATING"));
+    await waitFor(() => expect(result.current.data?.[0]?.attributes.status).toBe("READY"), {
+      timeout: 6000,
+    });
+    const callsAtReady = calls;
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    expect(calls).toBe(callsAtReady);
+  }, 15000);
+
+  it("does not poll a list containing only settled reviews", async () => {
+    let calls = 0;
+    server.use(
+      http.get("/api/reviews", () => {
+        calls += 1;
+        return HttpResponse.json(
+          listDoc([oneDoc("reviews", "abc12345", reviewAttrs("READY")).data]),
+        );
+      }),
+    );
+    const { result } = renderHook(() => useReviews(), { wrapper: queryWrapper() });
+    await waitFor(() => expect(result.current.data).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    expect(calls).toBe(1);
+  }, 15000);
+
+  it("does not poll an empty list", async () => {
+    let calls = 0;
+    server.use(
+      http.get("/api/reviews", () => {
+        calls += 1;
+        return HttpResponse.json(listDoc([]));
+      }),
+    );
+    const { result } = renderHook(() => useReviews(), { wrapper: queryWrapper() });
+    await waitFor(() => expect(result.current.data).toEqual([]));
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    expect(calls).toBe(1);
+  }, 15000);
 });
