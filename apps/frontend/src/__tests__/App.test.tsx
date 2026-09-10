@@ -1,11 +1,26 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
-import { toast } from "sonner";
+import { render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "@/App";
 import { THEME_STORAGE_KEY } from "@/lib/theme/types";
 
+// sonner resolves a "system" theme prop via the same matchMedia stub the app's
+// own ThemeProvider uses, so asserting on sonner's rendered DOM output cannot
+// distinguish "we passed the resolved theme" from "we passed the literal
+// string 'system' and sonner resolved it itself". Mock the module and capture
+// the prop Toaster actually receives instead (FR-8.1).
+const { capturedThemes } = vi.hoisted(() => ({ capturedThemes: [] as string[] }));
+
+vi.mock("sonner", () => ({
+  Toaster: (props: { theme?: string }) => {
+    capturedThemes.push(props.theme ?? "");
+    return null;
+  },
+  toast: vi.fn(),
+}));
+
 beforeEach(() => {
   window.history.pushState({}, "", "/no-such-page");
+  capturedThemes.length = 0;
 });
 
 describe("App", () => {
@@ -22,18 +37,19 @@ describe("App", () => {
     expect(document.documentElement.classList.contains("dark")).toBe(true);
   });
 
-  it("gives the toaster the resolved theme, never the literal system", async () => {
-    localStorage.setItem(THEME_STORAGE_KEY, "system");
-    render(<App />);
-    // sonner only renders its themed container once a toast is queued, so
-    // trigger one to surface the "data-sonner-theme" attribute it sets.
-    act(() => {
-      toast("hello");
-    });
-    await waitFor(() => {
-      expect(document.querySelector("[data-sonner-toaster]")).not.toBeNull();
-    });
-    const toaster = document.querySelector("[data-sonner-toaster]");
-    expect(toaster?.getAttribute("data-sonner-theme")).toBe("light");
-  });
+  it.each([
+    ["light", "light"],
+    ["dark", "dark"],
+    ["system", "light"],
+  ] as const)(
+    'passes Toaster the resolved theme for stored preference "%s", never the literal "system"',
+    (stored, expectedResolved) => {
+      localStorage.setItem(THEME_STORAGE_KEY, stored);
+      render(<App />);
+      expect(capturedThemes.length).toBeGreaterThan(0);
+      const lastTheme = capturedThemes[capturedThemes.length - 1];
+      expect(lastTheme).toBe(expectedResolved);
+      expect(lastTheme).not.toBe("system");
+    },
+  );
 });
