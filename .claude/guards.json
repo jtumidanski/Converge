@@ -1,0 +1,25 @@
+{
+  "_": "Opt-in marker for the context/cost guards in ~/.claude/hooks/. Presence of this file enables them; see ~/.claude/hooks/README.md. Commit it so git worktrees under .worktrees/ inherit it.",
+  "enabled": true,
+  "turn_budget": {
+    "warn": 100,
+    "cap": 120,
+    "grace": 5,
+    "repeat": 20
+  },
+  "context_handoff": {
+    "floor": 40,
+    "escalate": 60
+  },
+  "poll_streak": 3,
+  "finishing_agents": [],
+  "guards": {
+    "turn_budget": true,
+    "context_handoff": true,
+    "commit_boundary": true,
+    "fork_dispatch": true,
+    "wait_loop": true,
+    "home_paths": true
+  },
+  "handoff_hint": "In this project a handoff means: write the diagnosis into docs/tasks/task-NNN-slug/, then tell the user to /clear and re-run the phase command (/design-task, /plan-task, /execute-task) for the same task id — each phase resumes from the committed artifacts of the prior one, so nothing is lost. Stay inside the task worktree."
+}

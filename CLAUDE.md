@@ -105,3 +105,15 @@ The backend and frontend reviewer checklists are sourced from the `backend-dev-g
 
 - For GitHub/GitLab API contracts, configuration values, and service-to-service interactions, verify against local source or upstream provider docs rather than citing values from memory or general knowledge.
 - When uncertain about behavior, read the source rather than speculating.
+
+## Context & Cost Guards
+
+This repo opts in to the guards in `~/.claude/hooks/` via `.claude/guards.json`. They are enforced by hooks, not by honor system — several will refuse a tool call outright. Full reference: `~/.claude/hooks/README.md`.
+
+- **Hand off past ~150k context.** The controller never carries a session past ~60 tool calls (≈150k tokens) into a *new* unit of work — unconditionally, no carve-out for tasks remaining. Write the diagnosis into `docs/tasks/task-NNN-slug/`, then have the user `/clear` and re-run the phase command; it resumes from the committed artifacts. Finishing the unit in flight (reviewers, verifiers, doc agents) is still allowed.
+- **Subagents stop at 120 tool calls.** Commit what works and report PARTIAL with what is done file by file, what remains, and the exact next step. PARTIAL at the cap is the contracted outcome, not a failure — the controller dispatches a continuation with fresh context.
+- **Brief a fresh agent; do not fork.** A fork re-reads this entire conversation on every turn. Dispatch a named agent type with an explicit brief instead; when sharding a review, give each child the artifact path plus its own scope.
+- **Never spend a turn waiting.** No `sleep`, no `ps aux`/`pgrep` polling, no re-reading a log until it changes. Use `run_in_background: true` and let the completion notify you, or `Monitor` with an `until` loop and an explicit timeout.
+- **No absolute home paths under `docs/`.** Write repo-relative paths.
+
+Each of these has a one-line escape hatch when the exception is real: `CONTEXT-JUSTIFIED:`, `FORK-JUSTIFIED:`, or `POLL-JUSTIFIED:` followed by the reason, anywhere in the prompt or command.
