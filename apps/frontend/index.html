@@ -1,6 +1,44 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <script>
+      // Pre-paint theme application. This is a hand-inlined copy of resolveTheme
+      // and applyTheme from src/lib/theme/apply.ts, plus the storage key from
+      // src/lib/theme/types.ts. A module script always runs after first paint, so
+      // this cannot import them. Change one, change the other.
+      // src/__tests__/bootThemeScript.test.ts checks its shape and
+      // src/__tests__/bootThemeScript.behavior.test.ts executes it against the
+      // TypeScript core, so both fail if the two copies drift.
+      // Each step is guarded on its own: a blocked localStorage must not skip the
+      // OS-preference branch, or a dark-OS user gets a light flash. This mirrors
+      // readStoredPreference being total in the TypeScript core.
+      (function () {
+        var pref = "system";
+        try {
+          var stored = localStorage.getItem("converge.theme");
+          if (stored === "light" || stored === "dark" || stored === "system") pref = stored;
+        } catch {
+          // Storage blocked (private mode): keep the "system" default.
+        }
+        var dark = pref === "dark";
+        if (pref === "system") {
+          try {
+            dark =
+              typeof window.matchMedia === "function" &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches;
+          } catch {
+            dark = false;
+          }
+        }
+        try {
+          document.documentElement.classList.toggle("dark", dark);
+          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        } catch {
+          // Nothing left to do. This script must never throw: it runs before
+          // anything is painted and an exception here would block the app.
+        }
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
