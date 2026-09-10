@@ -14,11 +14,14 @@ describe("pre-paint theme boot script in index.html", () => {
     expect(html).toContain('pref !== "light"');
     expect(html).toContain('pref !== "dark"');
     expect(html).toContain('pref !== "system"');
+    expect(html).toContain('pref !== "light" && pref !== "dark" && pref !== "system"');
   });
 
   it("writes the dark class and color-scheme onto the document root", () => {
-    expect(html).toContain('classList.toggle("dark"');
-    expect(html).toContain("style.colorScheme");
+    expect(html).toContain('classList.toggle("dark", dark)');
+    expect(html).toContain('style.colorScheme = dark ? "dark" : "light"');
+    expect(html).not.toContain("colorScheme = pref");
+    expect(html).not.toContain('toggle("dark", pref');
   });
 
   it("runs before the application module script", () => {
