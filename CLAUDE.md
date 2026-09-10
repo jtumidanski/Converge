@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Converge is a combined PR/MR review tool: one place to review pull requests and merge requests across hosting providers. The system is a **Go** backend plus a **React/TypeScript** web UI, laid out as `apps/backend` and `apps/frontend`. The repository is currently unscaffolded — only `README.md` and this tooling exist. Module structure, frameworks, and build tooling will be decided during the first task; update this file (build commands, service paths, conventions) once those are settled.
+Converge is a combined PR/MR review tool: one place to review pull requests and merge requests across hosting providers. The system is a **Go** backend plus a **React/TypeScript** web UI, laid out as `apps/backend` and `apps/frontend`. The backend is one Go module (`github.com/jtumidanski/converge`) producing two binaries, `converge` (HTTP server with the embedded UI) and `converge-cli` (reconstruction proof of concept). Persistence is the filesystem only: mirrors under `REPOSITORY_CACHE_ROOT`, review sessions under `WORKSPACE_ROOT`. All CI logic lives in the root `Makefile` and `tools/`.
 
 ## Workflow Rules
 
@@ -12,20 +12,29 @@ When asked to understand or plan something, DO NOT start implementing code chang
 
 ## Build & Verification
 
-A branch is "done" only when all of these are clean. Commands are provisional until the first task lands tooling; correct them here when that happens.
+A branch is "done" only when all of these are clean.
+
+Repository root (what CI runs):
+
+- `make lint`
+- `make test`
+- `make test-integration`
+- `make build`
+- `make docker-build`
 
 **Backend** (cwd = `apps/backend`):
 - `go test -race -count=1 ./...`
+- `go test -race -count=1 -tags integration ./...`
 - `go vet ./...`
-- `golangci-lint run`
+- `go tool golangci-lint run` (pinned via the `tool` directive; no separate install)
 - `CGO_ENABLED=0 go build ./...`
 
 **Frontend** (cwd = `apps/frontend`):
 - `npm ci`
 - `npm run lint`
-- `npm run format`
-- `npm test`
-- `npm run build`
+- `npm run format:check` (`npm run format` rewrites)
+- `npm test` (Vitest)
+- `npm run build` (writes into `apps/backend/internal/ui/dist`)
 
 Node is not always on `PATH` — if `npm` is missing, load it first:
 
@@ -36,6 +45,15 @@ export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm use 22
 ## Code Patterns
 
 When refactoring shared types or creating common libraries, prefer straightforward moves over re-exporting type aliases. Keep abstractions clean — don't break service boundaries by having one layer call another's internals directly.
+
+## Architecture Notes
+
+- Backend package direction: `api → review → {provider, mirror, workspace, diff, session} → gitx`. Nothing imports `api` or `cmd`; `gitx` imports nothing from the module.
+- `internal/session` owns the `Session` model, `ReviewError`, error codes, and the on-disk store. `internal/review` owns landing resolution, the resolve pipeline, the applicator, and the orchestrating service.
+- Every git call goes through `gitx.Runner` with an argument slice, never a shell. Client-supplied strings are validated before they reach git.
+- Provider credentials reach git only through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`, never argv and never the stored remote URL.
+- The frontend deviates from `frontend-dev-guidelines` in three agreed ways: Vitest instead of Jest, a thin `fetch` wrapper instead of a caching API client, and plain service objects instead of a `BaseService` class.
+- The backend deviates from `backend-dev-guidelines` where those rules assume GORM, api2go, and logrus: `session.json` plays the entity role, `log/slog` is injected through constructors, and pipeline steps are plain functions.
 
 ## Development Workflow
 

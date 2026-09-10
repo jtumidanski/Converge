@@ -1,0 +1,3 @@
+{ "id": 1, "name": "server", "full_name": "atlas/server", "owner": { "login": "atlas" },
+  "default_branch": "main", "html_url": "https://github.com/atlas/server",
+  "clone_url": "https://github.com/atlas/server.git", "private": true }

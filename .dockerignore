@@ -1,0 +1,11 @@
+.git
+.worktrees
+dist
+docs
+apps/frontend/node_modules
+apps/frontend/dist
+apps/backend/internal/ui/dist/*
+!apps/backend/internal/ui/dist/.gitkeep
+**/*_test.go
+.env
+*.env

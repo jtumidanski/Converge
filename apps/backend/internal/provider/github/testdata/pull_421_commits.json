@@ -1,0 +1,4 @@
+[
+  { "sha": "1111111111111111111111111111111111111111", "commit": { "message": "feat: endpoint", "author": { "date": "2026-08-20T10:00:00Z" } } },
+  { "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "commit": { "message": "test: endpoint", "author": { "date": "2026-08-20T11:00:00Z" } } }
+]

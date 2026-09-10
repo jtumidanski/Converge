@@ -1,0 +1,4 @@
+[
+  { "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "parent_ids": ["1111111111111111111111111111111111111111"], "message": "test: endpoint", "authored_date": "2026-08-20T11:00:00Z" },
+  { "id": "1111111111111111111111111111111111111111", "parent_ids": ["0000000000000000000000000000000000000000"], "message": "feat: endpoint", "authored_date": "2026-08-20T10:00:00Z" }
+]
