@@ -12,6 +12,7 @@ export const strings = {
   discardReview: "Discard Review",
   buildReview: "Build Review",
   diagnostics: "Diagnostics",
+  expired: "expired",
   reviewUnavailableTitle: "This review is no longer available",
   reviewUnavailableDescription: "Start a new review to continue.",
   startNewReview: "Start a new review",
