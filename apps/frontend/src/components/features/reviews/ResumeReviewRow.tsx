@@ -84,7 +84,12 @@ export function ResumeReviewRow({ review, pending, onResume, onDiscard }: Resume
             {totals.files} files · +{totals.additions} −{totals.deletions}
           </span>
         ) : null}
-        {error ? <span>{" · "}{errorSummary(error)}</span> : null}
+        {error ? (
+          <span>
+            {" · "}
+            {errorSummary(error)}
+          </span>
+        ) : null}
       </p>
 
       <p className="text-sm text-muted-foreground">
