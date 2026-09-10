@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -45,6 +45,8 @@ function errorSummary(error: ReviewErrorPayload): string {
 
 export function ResumeReviewRow({ review, pending, onResume, onDiscard }: ResumeReviewRowProps) {
   const [confirming, setConfirming] = useState(false);
+  const wasConfirmingRef = useRef(false);
+  const controlsRef = useRef<HTMLDivElement>(null);
   const { status, stage, provider, repository, changes, totals, error, createdAt, expiresAt } =
     review.attributes;
   const presentation = statusPresentation(status);
@@ -54,6 +56,20 @@ export function ResumeReviewRow({ review, pending, onResume, onDiscard }: Resume
     expiry.text === "" || expiry.text === strings.expired
       ? expiry.text
       : `${strings.expires} ${expiry.text}`;
+  const confirmId = `discard-confirm-${review.id}`;
+
+  // When the confirm area collapses (cancelled, or a failed discard leaves the
+  // row resting), move focus back to the Discard trigger rather than letting
+  // it fall to <body>. A successful discard unmounts the row, so this effect
+  // simply never runs on that path.
+  useEffect(() => {
+    if (wasConfirmingRef.current && !confirming) {
+      controlsRef.current
+        ?.querySelector<HTMLButtonElement>('[data-action="discard-trigger"]')
+        ?.focus();
+    }
+    wasConfirmingRef.current = confirming;
+  }, [confirming]);
 
   function confirmDiscard() {
     // Clear the armed state before firing: on success the row unmounts, and on
@@ -99,7 +115,7 @@ export function ResumeReviewRow({ review, pending, onResume, onDiscard }: Resume
             {" · "}
             <span
               className={expiry.nearExpiry ? "font-medium text-destructive" : undefined}
-              {...(expiry.nearExpiry ? { role: "status" } : {})}
+              role="status"
             >
               {expiryText}
             </span>
@@ -109,21 +125,32 @@ export function ResumeReviewRow({ review, pending, onResume, onDiscard }: Resume
 
       {confirming ? (
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <span className="mr-auto text-sm text-foreground">
+          <span id={confirmId} className="mr-auto text-sm text-foreground">
             {strings.discardReview}: {repository} ({changeLabel})? {strings.discardConfirmSuffix}
           </span>
           {/* Focus the Cancel button, not the destructive one: a destructive action must not be
               one keypress away. This prevents keyboard users from accidentally confirming via
               key-repeat or double-tapping Enter. */}
-          <Button variant="outline" size="sm" autoFocus onClick={() => setConfirming(false)}>
+          <Button
+            variant="outline"
+            size="sm"
+            autoFocus
+            aria-describedby={confirmId}
+            onClick={() => setConfirming(false)}
+          >
             {strings.cancel}
           </Button>
-          <Button variant="destructive" size="sm" onClick={confirmDiscard}>
+          <Button
+            variant="destructive"
+            size="sm"
+            aria-describedby={confirmId}
+            onClick={confirmDiscard}
+          >
             {strings.discard}
           </Button>
         </div>
       ) : (
-        <div className="flex items-center justify-end gap-2">
+        <div ref={controlsRef} className="flex items-center justify-end gap-2">
           <Button
             size="sm"
             disabled={pending}
@@ -135,11 +162,13 @@ export function ResumeReviewRow({ review, pending, onResume, onDiscard }: Resume
           <Button
             variant="outline"
             size="sm"
+            data-action="discard-trigger"
             disabled={pending}
+            aria-busy={pending}
             aria-label={`${strings.discard} review of ${repository} (${changeLabel})`}
             onClick={() => setConfirming(true)}
           >
-            {pending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {pending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : null}
             {strings.discard}
           </Button>
         </div>

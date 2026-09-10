@@ -53,6 +53,12 @@ describe("ResumeReviewList", () => {
     expect(screen.getByText("2")).toBeInTheDocument();
   });
 
+  it("names the section landmark after its heading and gives the count context", () => {
+    renderList({ reviews: [makeReview("r1"), makeReview("r2")] });
+    expect(screen.getByRole("region", { name: /resume a review/i })).toBeInTheDocument();
+    expect(screen.getByLabelText(/2 reviews in progress/i)).toBeInTheDocument();
+  });
+
   it("renders a READY row with repository, provider, changes and totals", () => {
     renderList();
     expect(screen.getByText("Ready")).toBeInTheDocument();
@@ -122,6 +128,20 @@ describe("ResumeReviewList", () => {
     expect(screen.getByRole("status")).toHaveTextContent(/expires in/i);
   });
 
+  it("keeps the expiry live region present before the near-expiry threshold, so a later crossing is announced", () => {
+    // The region must exist unconditionally rather than being created only once
+    // nearExpiry becomes true: a live region that appears already populated is
+    // never announced by assistive tech.
+    renderList({
+      reviews: [
+        makeReview("r1", { expiresAt: new Date(Date.now() + 5 * 3_600_000).toISOString() }),
+      ],
+    });
+    const region = screen.getByRole("status");
+    expect(region).toHaveTextContent(/expires in/i);
+    expect(region.className).not.toContain("text-destructive");
+  });
+
   it("renders an already-past expiry as expired, not a negative duration", () => {
     renderList({
       reviews: [makeReview("r1", { expiresAt: new Date(Date.now() - 60_000).toISOString() })],
@@ -163,6 +183,33 @@ describe("ResumeReviewList", () => {
     expect(screen.queryByText(/cannot be undone/i)).not.toBeInTheDocument();
   });
 
+  it("focuses Cancel, not Discard, when the two-step confirmation opens", async () => {
+    // A destructive action must not be one keypress away: this protects the
+    // controller ruling that moved autoFocus off the destructive button.
+    renderList();
+    await userEvent.click(screen.getByRole("button", { name: /discard review of atlas\/server/i }));
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toHaveFocus();
+  });
+
+  it("returns focus to the Discard trigger once the confirmation is cancelled", async () => {
+    renderList();
+    await userEvent.click(screen.getByRole("button", { name: /discard review of atlas\/server/i }));
+    await userEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+    expect(screen.getByRole("button", { name: /discard review of atlas\/server/i })).toHaveFocus();
+  });
+
+  it("describes the confirmation buttons with the destructive question", async () => {
+    renderList();
+    await userEvent.click(screen.getByRole("button", { name: /discard review of atlas\/server/i }));
+    const question = screen.getByText(/cannot be undone/i);
+    expect(screen.getByRole("button", { name: /^cancel$/i })).toHaveAccessibleDescription(
+      question.textContent ?? "",
+    );
+    expect(screen.getByRole("button", { name: /^discard$/i })).toHaveAccessibleDescription(
+      question.textContent ?? "",
+    );
+  });
+
   it("calls onDiscard once when the confirmation is accepted", async () => {
     const { onDiscard } = renderList();
     await userEvent.click(screen.getByRole("button", { name: /discard review of atlas\/server/i }));
@@ -178,5 +225,15 @@ describe("ResumeReviewList", () => {
     });
     expect(screen.getByRole("button", { name: /resume review of atlas\/server/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /resume review of web\/ui/i })).toBeEnabled();
+  });
+
+  it("marks the pending row's discard control as busy for assistive tech", () => {
+    renderList({
+      reviews: [makeReview("r1")],
+      pendingId: "r1",
+    });
+    expect(
+      screen.getByRole("button", { name: /discard review of atlas\/server/i }),
+    ).toHaveAttribute("aria-busy", "true");
   });
 });

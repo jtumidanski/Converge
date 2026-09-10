@@ -34,8 +34,9 @@ export function useReviews() {
   return useQuery({
     queryKey: reviewKeys.lists(),
     queryFn: () => reviewsService.list(),
+    staleTime: 0,
     refetchInterval: (query) => {
-      const data = query.state.data as Review[] | undefined;
+      const data = query.state.data;
       return data?.some((review) => !isTerminal(review.attributes.status)) ? 2000 : false;
     },
   });

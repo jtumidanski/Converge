@@ -30,4 +30,5 @@ export const strings = {
   noReviewsInProgressDescription: "Start one by choosing a repository below.",
   reviewsUnavailableTitle: "Could not load reviews in progress",
   reviewDiscardFailed: "The review could not be discarded.",
+  reviewsInProgressCount: "reviews in progress",
 } as const;

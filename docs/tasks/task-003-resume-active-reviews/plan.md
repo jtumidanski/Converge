@@ -69,7 +69,7 @@ Note the directory: `src/components/features/reviews/` (plural) is new and sits 
 - `expiryLabel` returns only the relative fragment (`"in 5 hours"`); the row composes `"expires {text}"` from `strings`. The already-expired case returns the complete word `"expired"` instead, so the row must not blindly prefix — see Task 4's compose rule.
 - The `< 3_600_000` boundary means exactly 60 minutes remaining is **not** near-expiry. This is stated in the test.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `apps/frontend/src/lib/__tests__/relativeTime.test.ts`:
 
@@ -140,12 +140,12 @@ describe("expiryLabel", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `cd apps/frontend && npx vitest run src/lib/__tests__/relativeTime.test.ts`
 Expected: FAIL — cannot resolve `@/lib/relativeTime`.
 
-- [ ] **Step 3: Add the `expired` string**
+- [x] **Step 3: Add the `expired` string**
 
 In `apps/frontend/src/lib/strings.ts`, add to the `strings` object (keep the existing entries untouched):
 
@@ -153,7 +153,7 @@ In `apps/frontend/src/lib/strings.ts`, add to the `strings` object (keep the exi
   expired: "expired",
 ```
 
-- [ ] **Step 4: Write the implementation**
+- [x] **Step 4: Write the implementation**
 
 Create `apps/frontend/src/lib/relativeTime.ts`:
 
@@ -223,12 +223,12 @@ export function expiryLabel(
 }
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 Run: `cd apps/frontend && npx vitest run src/lib/__tests__/relativeTime.test.ts`
 Expected: PASS, 11 tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/frontend/src/lib/relativeTime.ts apps/frontend/src/lib/__tests__/relativeTime.test.ts apps/frontend/src/lib/strings.ts
@@ -250,12 +250,12 @@ git commit -m "feat(frontend): add relative-time helpers for review expiry"
 
 This is a **pure move**. The function body is copied verbatim; the only edits are adding `export` and changing `ReviewStatus.tsx` to import it. Do not "improve" the mapping — the existing `ReviewStatus` test covers it through the component, and any behaviour change would show up there.
 
-- [ ] **Step 1: Run the existing test to establish the baseline**
+- [x] **Step 1: Run the existing test to establish the baseline**
 
 Run: `cd apps/frontend && npx vitest run src/components/features/review/__tests__/ReviewStatus.test.tsx`
 Expected: PASS. (If this file does not exist, run `npx vitest run src/components/features/review` instead and note which tests cover stage labels; the baseline is whatever passes now.)
 
-- [ ] **Step 2: Create the shared module**
+- [x] **Step 2: Create the shared module**
 
 Create `apps/frontend/src/lib/stageLabel.ts`:
 
@@ -279,7 +279,7 @@ export function stageLabel(stage: string | null): string {
 }
 ```
 
-- [ ] **Step 3: Point `ReviewStatus.tsx` at it**
+- [x] **Step 3: Point `ReviewStatus.tsx` at it**
 
 Rewrite `apps/frontend/src/components/features/review/ReviewStatus.tsx` to:
 
@@ -302,17 +302,17 @@ export function ReviewStatus({ stage }: ReviewStatusProps) {
 }
 ```
 
-- [ ] **Step 4: Verify the move was pure**
+- [x] **Step 4: Verify the move was pure**
 
 Run: `cd apps/frontend && npx vitest run src/components/features/review && npx tsc -b`
 Expected: PASS, with the same test count as Step 1. A failure here means the move was not pure — revert the body edit rather than adjusting the test.
 
-- [ ] **Step 5: Confirm there is exactly one definition**
+- [x] **Step 5: Confirm there is exactly one definition**
 
 Run: `cd apps/frontend && grep -rn "function stageLabel" src/`
 Expected: exactly one line, in `src/lib/stageLabel.ts`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/frontend/src/lib/stageLabel.ts apps/frontend/src/components/features/review/ReviewStatus.tsx
@@ -337,7 +337,7 @@ git commit -m "refactor(frontend): extract stageLabel into a shared module"
 - The existing test file already has a `reviewAttrs(status)` factory near the top — reuse it. Note it takes a `string`, so it produces an object that needs no cast for MSW.
 - The test asserts the *behaviour* (request count stops growing) rather than reading the option, matching how `useReview`'s polling test in the same file is written. It uses real timers with an explicit `timeout`, as the existing test does.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `apps/frontend/src/lib/hooks/api/__tests__/useReviews.test.tsx` (and add `useReviews` to the import list from `@/lib/hooks/api/useReviews` at the top of the file):
 
@@ -397,12 +397,12 @@ describe("useReviews", () => {
 
 If `listDoc` is not already imported in that file, add it to the existing `@/test/server` import.
 
-- [ ] **Step 2: Run the tests to verify the first one fails**
+- [x] **Step 2: Run the tests to verify the first one fails**
 
 Run: `cd apps/frontend && npx vitest run src/lib/hooks/api/__tests__/useReviews.test.tsx -t "useReviews"`
 Expected: the polling test FAILS (status stays `CREATING`; the second request is never issued). The two "does not poll" tests pass already — that is correct, they are regression guards.
 
-- [ ] **Step 3: Add the conditional interval**
+- [x] **Step 3: Add the conditional interval**
 
 In `apps/frontend/src/lib/hooks/api/useReviews.ts`, replace:
 
@@ -431,12 +431,12 @@ export function useReviews() {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cd apps/frontend && npx vitest run src/lib/hooks/api/__tests__/useReviews.test.tsx`
 Expected: PASS, including the pre-existing tests in the file.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/frontend/src/lib/hooks/api/useReviews.ts apps/frontend/src/lib/hooks/api/__tests__/useReviews.test.tsx
@@ -476,7 +476,7 @@ git commit -m "feat(frontend): poll the review list while any review is building
 - Only the `CREATING` stage text sits in `aria-live="polite"`. The expiry text is **not** in a live region — it drifts every poll and announcing it repeatedly would be noise. Instead the expiry element carries `role="status"` only when `nearExpiry` is true, so the transition into urgency is announced once (design §3.6).
 - Composing the expiry line: `expiryLabel` returns `"expired"` (a complete word) or a fragment like `"in 5 hours"`. Compose as `text === strings.expired ? strings.expired : \`${strings.expires} ${text}\``, so the past case never reads "expires expired".
 
-- [ ] **Step 1: Add the copy**
+- [x] **Step 1: Add the copy**
 
 In `apps/frontend/src/lib/strings.ts`, add these keys (alongside `expired` from Task 1; `conflict` and `discardReview` already exist and are reused, not duplicated):
 
@@ -499,7 +499,7 @@ In `apps/frontend/src/lib/strings.ts`, add these keys (alongside `expired` from 
 
 `noReviewsInProgress*` and `reviewsUnavailableTitle` are used by Task 5; `reviewDiscardFailed` by Task 6. Adding them all now keeps `strings.ts` to one edit.
 
-- [ ] **Step 2: Write the component**
+- [x] **Step 2: Write the component**
 
 Create `apps/frontend/src/components/features/reviews/ResumeReviewRow.tsx`:
 
@@ -647,12 +647,12 @@ export function ResumeReviewRow({ review, pending, onResume, onDiscard }: Resume
 }
 ```
 
-- [ ] **Step 3: Type-check**
+- [x] **Step 3: Type-check**
 
 Run: `cd apps/frontend && npx tsc -b`
 Expected: no errors. (This task has no test file of its own — the row is exercised through `ResumeReviewList` in Task 5, which is how it is rendered in production.)
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add apps/frontend/src/components/features/reviews/ResumeReviewRow.tsx apps/frontend/src/lib/strings.ts
@@ -690,7 +690,7 @@ git commit -m "feat(frontend): add the resume-review row component"
 - The section is a `<section>` with an `<h2>`; the rows are a `<ul>` of `<li>`. Not a `<Table>` — the row is a three-line block with a variable detail line, and a table would need column spans or break the responsive requirement (design §3.1).
 - The error banner is scoped to this section. The page must keep rendering the provider picker and repository list around it (FR-5.3) — enforced by the page test in Task 6.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `apps/frontend/src/components/features/reviews/__tests__/ResumeReviewList.test.tsx`:
 
@@ -877,12 +877,12 @@ describe("ResumeReviewList", () => {
 });
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cd apps/frontend && npx vitest run src/components/features/reviews`
 Expected: FAIL — cannot resolve `@/components/features/reviews/ResumeReviewList`.
 
-- [ ] **Step 3: Write the component**
+- [x] **Step 3: Write the component**
 
 Create `apps/frontend/src/components/features/reviews/ResumeReviewList.tsx`:
 
@@ -971,12 +971,12 @@ export function ResumeReviewList(props: ResumeReviewListProps) {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cd apps/frontend && npx vitest run src/components/features/reviews`
 Expected: PASS, 16 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/frontend/src/components/features/reviews/
@@ -1002,7 +1002,7 @@ git commit -m "feat(frontend): add the resume-review list section"
 - The section renders between the `PageHeader` and the provider error banner / `ProviderPicker` (FR-1.1).
 - The existing tests in this file use `onUnhandledRequest: "bypass"`, so tests that do not stub `GET /api/reviews` will not fail — but they will render whatever the real fetch does. Add a `seedReviews()` helper and call it (or explicitly stub an empty list) in the pre-existing tests that assert on the empty/error states, so a stray resume row cannot collide with their queries.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `apps/frontend/src/pages/__tests__/SelectRepositoryPage.test.tsx`. First add a helper next to the existing `seedProviders()`:
 
@@ -1163,12 +1163,12 @@ Also add `seedReviews()` to the pre-existing tests in this file so an unstubbed 
 
 Ensure `errorDoc` and `listDoc` are in the file's `@/test/server` import.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `cd apps/frontend && npx vitest run src/pages/__tests__/SelectRepositoryPage.test.tsx`
 Expected: the new suite FAILS — no resume section is rendered. The pre-existing tests still pass.
 
-- [ ] **Step 3: Wire the page**
+- [x] **Step 3: Wire the page**
 
 In `apps/frontend/src/pages/SelectRepositoryPage.tsx`, add these imports:
 
@@ -1216,12 +1216,12 @@ Then render the section as the first child after `<PageHeader ... />`:
       />
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cd apps/frontend && npx vitest run src/pages/__tests__/SelectRepositoryPage.test.tsx`
 Expected: PASS, both the new suite and every pre-existing test.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/frontend/src/pages/SelectRepositoryPage.tsx apps/frontend/src/pages/__tests__/SelectRepositoryPage.test.tsx
@@ -1240,7 +1240,7 @@ git commit -m "feat(frontend): surface resumable reviews on the root page"
 
 Every command below must be run and its output read. Do not report a step as passing without having seen it pass — a command that was not run is not a passing command.
 
-- [ ] **Step 1: Frontend gate**
+- [x] **Step 1: Frontend gate**
 
 ```bash
 cd apps/frontend
@@ -1252,7 +1252,7 @@ npm run build
 
 Expected: all four clean. If `format:check` fails, run `npm run format`, re-run `format:check`, and commit the reformatting.
 
-- [ ] **Step 2: Backend gate — prove it is unaffected**
+- [x] **Step 2: Backend gate — prove it is unaffected**
 
 ```bash
 cd apps/backend
@@ -1264,7 +1264,7 @@ CGO_ENABLED=0 go build ./...
 
 Expected: all clean. This task changes no Go file; running the suite is how that claim is proven rather than asserted. Use an explicit generous timeout on the test and lint commands — they are slow on a cold cache.
 
-- [ ] **Step 3: Root gate**
+- [x] **Step 3: Root gate**
 
 ```bash
 make lint
@@ -1276,7 +1276,7 @@ make docker-build
 
 Expected: all clean.
 
-- [ ] **Step 4: Prove the global constraints hold**
+- [x] **Step 4: Prove the global constraints hold**
 
 ```bash
 git diff main --stat -- apps/backend/          # expect: no output
@@ -1285,7 +1285,7 @@ grep -rn "function stageLabel" apps/frontend/src/   # expect: exactly one hit, s
 grep -rn "included" apps/frontend/src/components/features/reviews/  # expect: no hits
 ```
 
-- [ ] **Step 5: Commit any fixes**
+- [x] **Step 5: Commit any fixes**
 
 ```bash
 git add -A
@@ -1300,15 +1300,15 @@ Skip if nothing changed.
 
 **Files:** `docs/tasks/task-003-resume-active-reviews/audit.md`
 
-- [ ] **Step 1: Request review**
+- [x] **Step 1: Request review**
 
 Invoke `superpowers:requesting-code-review`. Because only TypeScript/React files changed, it dispatches `plan-adherence-reviewer` and `frontend-guidelines-reviewer` (not the backend reviewer). Findings go to `docs/tasks/task-003-resume-active-reviews/audit.md`.
 
-- [ ] **Step 2: Address findings**
+- [x] **Step 2: Address findings**
 
 Fix every Critical and Important finding. Re-run Task 7's frontend gate afterwards.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add -A

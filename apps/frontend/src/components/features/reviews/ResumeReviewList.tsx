@@ -69,11 +69,18 @@ function body(props: ResumeReviewListProps) {
 export function ResumeReviewList(props: ResumeReviewListProps) {
   const showCount = props.error === undefined && !props.loading && props.reviews.length > 0;
   return (
-    <section className="flex flex-col gap-3">
+    <section className="flex flex-col gap-3" aria-labelledby="resume-review-heading">
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-base font-semibold text-foreground">{strings.resumeReview}</h2>
+        <h2 id="resume-review-heading" className="text-base font-semibold text-foreground">
+          {strings.resumeReview}
+        </h2>
         {showCount ? (
-          <span className="text-sm text-muted-foreground">{props.reviews.length}</span>
+          <span
+            className="text-sm text-muted-foreground"
+            aria-label={`${props.reviews.length} ${strings.reviewsInProgressCount}`}
+          >
+            {props.reviews.length}
+          </span>
         ) : null}
       </div>
       {body(props)}
