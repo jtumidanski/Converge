@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -19,6 +19,10 @@ interface ReviewStatusLineProps {
   onFinish: () => void;
   onDiscard: () => void;
   pending: boolean;
+  // The Discard confirmation is a modal dialog, so the parent page needs to
+  // know it's open to disable keyboard shortcuts behind it (FR-41).
+  confirming: boolean;
+  onConfirmingChange: (confirming: boolean) => void;
 }
 
 export function ReviewStatusLine({
@@ -28,8 +32,9 @@ export function ReviewStatusLine({
   onFinish,
   onDiscard,
   pending,
+  confirming,
+  onConfirmingChange,
 }: ReviewStatusLineProps) {
-  const [confirming, setConfirming] = useState(false);
   const { status, included, baseBranch, baseSha, baseDescription, totals } = review.attributes;
   // The first key found across the included titles, so a multi-change review
   // for one ticket still reads as that ticket.
@@ -73,7 +78,12 @@ export function ReviewStatusLine({
           value={progress.percent}
           label={`${progress.viewed} / ${progress.total} viewed`}
         />
-        <Button variant="ghost" size="sm" disabled={pending} onClick={() => setConfirming(true)}>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={pending}
+          onClick={() => onConfirmingChange(true)}
+        >
           {strings.discard}
         </Button>
         <Button size="sm" disabled={pending} onClick={onFinish}>
@@ -82,10 +92,10 @@ export function ReviewStatusLine({
       </span>
       <DiscardDialog
         open={confirming}
-        onOpenChange={setConfirming}
+        onOpenChange={onConfirmingChange}
         pending={pending}
         onConfirm={() => {
-          setConfirming(false);
+          onConfirmingChange(false);
           onDiscard();
         }}
       />

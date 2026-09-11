@@ -54,4 +54,9 @@ describe("viewed", () => {
     localStorage.setItem(viewedKey("bad"), "{oops");
     expect(viewedStore("bad").get()).toEqual([]);
   });
+
+  it("tolerates a stored array whose members are not strings", () => {
+    localStorage.setItem(viewedKey("wrong-types"), JSON.stringify([1, 2, 3]));
+    expect(viewedStore("wrong-types").get()).toEqual([]);
+  });
 });

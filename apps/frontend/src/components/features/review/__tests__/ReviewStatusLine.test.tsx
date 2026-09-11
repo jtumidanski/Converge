@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ReviewStatusLine } from "@/components/features/review/ReviewStatusLine";
 import type { IncludedChange, Review } from "@/types/models/review";
@@ -56,11 +57,20 @@ function file(path: string): ReviewFile {
   };
 }
 
+// The Discard dialog's open state is controlled by the parent page (so it can
+// disable keyboard shortcuts while open); this harness stands in for that.
+function ControlledReviewStatusLine(
+  props: Omit<React.ComponentProps<typeof ReviewStatusLine>, "confirming" | "onConfirmingChange">,
+) {
+  const [confirming, setConfirming] = useState(false);
+  return <ReviewStatusLine {...props} confirming={confirming} onConfirmingChange={setConfirming} />;
+}
+
 function renderLine(props: Partial<React.ComponentProps<typeof ReviewStatusLine>> = {}) {
   const onFinish = vi.fn();
   const onDiscard = vi.fn();
   render(
-    <ReviewStatusLine
+    <ControlledReviewStatusLine
       review={review()}
       files={[file("a.ts"), file("b.ts"), file("c.ts"), file("d.ts")]}
       viewed={new Set(["a.ts"])}

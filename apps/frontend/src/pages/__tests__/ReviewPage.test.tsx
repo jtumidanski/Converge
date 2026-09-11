@@ -221,6 +221,18 @@ describe("ReviewPage (READY)", () => {
     expect(await screen.findByText("reviews page")).toBeInTheDocument();
   });
 
+  it("does not fire shortcuts while the Discard confirmation dialog is open", async () => {
+    seed();
+    renderPage();
+    await screen.findByTestId("file-diff");
+    await userEvent.click(screen.getByRole("button", { name: "Discard" }));
+    await screen.findByRole("button", { name: /discard review/i });
+    await userEvent.keyboard("v");
+    await userEvent.keyboard("j");
+    expect(localStorage.getItem(viewedKey("rev-1"))).toBeNull();
+    expect(screen.getByText("File 1 of 2")).toBeInTheDocument();
+  });
+
   it("does not fire shortcuts while the tree filter has focus", async () => {
     seed();
     renderPage();

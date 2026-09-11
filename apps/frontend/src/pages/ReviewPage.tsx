@@ -48,6 +48,9 @@ export function ReviewPage() {
   const files = useReviewFiles(id, status === "READY");
   const [explicitPath, setExplicitPath] = useState<string | undefined>(undefined);
   const [fromKeyboard, setFromKeyboard] = useState(false);
+  // Lifted out of ReviewStatusLine so shortcuts can be disabled while the
+  // Discard confirmation dialog owns the keyboard (FR-41).
+  const [discardConfirming, setDiscardConfirming] = useState(false);
   // Read-only binding: toggleViewed writes through the same store, so the
   // setter half of the tuple would be a second way to do one thing.
   const [viewedPaths] = useStore(viewedStore(id ?? ""));
@@ -110,7 +113,7 @@ export function ReviewPage() {
       k: () => select(previousPath, "keyboard"),
       v: toggleSelectedViewed,
     },
-    { enabled: status === "READY" },
+    { enabled: status === "READY" && !discardConfirming },
   );
 
   async function closeReview(): Promise<void> {
@@ -179,6 +182,8 @@ export function ReviewPage() {
             onFinish={() => void closeReview()}
             onDiscard={() => void closeReview()}
             pending={finishOrDiscard.isPending}
+            confirming={discardConfirming}
+            onConfirmingChange={setDiscardConfirming}
           />
           {files.isError ? (
             <ErrorBanner
