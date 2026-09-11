@@ -34,9 +34,30 @@ func TestAuthorizeGitDeclaresTokenAsSpecSecret(t *testing.T) {
 	if !found {
 		t.Errorf("AuthorizeGit did not declare the token as a spec secret: %v", spec.Secrets)
 	}
+	// The real invariant: the raw token never appears verbatim in spec.Env
+	// (it is base64'd as part of an Authorization: Basic header value), but
+	// that base64 blob DOES appear there and must itself be declared as a
+	// spec secret so stderr redaction can catch it too.
+	blob := gitx.BasicAuthBlob(provider.GitUser(provider.KindGitHub), hostedToken)
+	blobFound := false
 	for _, kv := range spec.Env {
 		if strings.Contains(kv, hostedToken) {
 			t.Errorf("raw token reached git environment verbatim: %q", kv)
 		}
+		if strings.Contains(kv, blob) {
+			blobFound = true
+		}
+	}
+	if !blobFound {
+		t.Fatalf("precondition: base64 Basic blob not present in spec.Env: %v", spec.Env)
+	}
+	blobDeclared := false
+	for _, s := range spec.Secrets {
+		if s == blob {
+			blobDeclared = true
+		}
+	}
+	if !blobDeclared {
+		t.Errorf("AuthorizeGit did not declare the base64 Basic blob as a spec secret: %v", spec.Secrets)
 	}
 }

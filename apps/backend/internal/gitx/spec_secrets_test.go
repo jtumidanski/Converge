@@ -38,7 +38,10 @@ func failing(echo string, secrets []string) Spec {
 func TestRunRedactsSpecScopedSecret(t *testing.T) {
 	r, buf := runnerWithLog(t, nil)
 	const specSecret = "spec-scoped-token-aaa"
-	res, _ := r.Run(context.Background(), failing(specSecret, []string{specSecret}))
+	res, err := r.Run(context.Background(), failing(specSecret, []string{specSecret}))
+	if err == nil {
+		t.Fatal("expected git to fail")
+	}
 	if !strings.Contains(string(res.Stderr), specSecret) {
 		t.Fatalf("precondition: git stderr lacks the secret: %q", res.Stderr)
 	}

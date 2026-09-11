@@ -235,10 +235,12 @@ func (c *Client) AuthorizeGit(repo provider.Repository, spec *gitx.Spec) error {
 		return err
 	}
 	spec.Env = append(spec.Env, env...)
-	// Declare the token for this invocation's stderr redaction; see the
-	// matching note in the GitHub client. A hosted per-user token is unknown
-	// to the shared runner's Options.Secrets.
-	spec.Secrets = append(spec.Secrets, c.token.Reveal())
+	// Declare both the raw token and its base64 Basic-auth blob for this
+	// invocation's stderr redaction; see the matching note in the GitHub
+	// client. A hosted per-user token is unknown to the shared runner's
+	// Options.Secrets, and a bare blob with no "authorization:" prefix in
+	// stderr text is redacted by neither list otherwise.
+	spec.Secrets = append(spec.Secrets, c.token.Reveal(), gitx.BasicAuthBlob(provider.GitUser(provider.KindGitLab), c.token.Reveal()))
 	return nil
 }
 

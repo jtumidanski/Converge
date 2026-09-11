@@ -186,12 +186,14 @@ func (c *Client) AuthorizeGit(repo provider.Repository, spec *gitx.Spec) error {
 		return err
 	}
 	spec.Env = append(spec.Env, env...)
-	// Declare the token for this invocation's stderr redaction. In hosted mode
-	// the token is per user and decrypted per request, so it is not in the
-	// shared runner's Options.Secrets and nothing else would scrub it. (The
-	// base64 Basic form built above is covered separately by Redact's
-	// Authorization-header rule.)
-	spec.Secrets = append(spec.Secrets, c.token.Reveal())
+	// Declare both the raw token and its base64 Basic-auth blob for this
+	// invocation's stderr redaction. In hosted mode the token is per user and
+	// decrypted per request, so it is not in the shared runner's
+	// Options.Secrets and nothing else would scrub either form. Redact's
+	// Authorization-header rule only fires when the "authorization:" prefix
+	// is present alongside the blob in stderr text, so the bare blob needs
+	// its own declaration.
+	spec.Secrets = append(spec.Secrets, c.token.Reveal(), gitx.BasicAuthBlob(provider.GitUser(provider.KindGitHub), c.token.Reveal()))
 	return nil
 }
 
