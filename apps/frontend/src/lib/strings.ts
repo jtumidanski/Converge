@@ -66,4 +66,8 @@ export const strings = {
   columnProgress: "Progress",
   columnExpires: "Expires",
   columnActions: "Actions",
+  filterBranchesPlaceholder: "Filter branches",
+  noBranchesMatchFilter: "No branches match that filter.",
+  branchDefault: "default",
+  useTypedBranch: (name: string) => `Use “${name}”`,
 } as const;
