@@ -2,6 +2,7 @@
  * Product vocabulary (FR-10.11). Git terms appear only under Diagnostics.
  */
 export const strings = {
+  appName: "Converge",
   provider: "Provider",
   repository: "Repository",
   base: "Base",
@@ -32,4 +33,22 @@ export const strings = {
   reviewDiscardFailed: "The review could not be discarded.",
   reviewsInProgressCount: "reviews in progress",
   noTicket: "No ticket",
+  reviews: "Reviews",
+  newReview: "New review",
+  startNewReviewRow: "Start a new review",
+  chooseChanges: "Choose changes",
+  noOpenReviews: "No open reviews",
+  hideDependencyBots: "Hide dependency bots",
+  groupByTicket: "Group by ticket",
+  selectOneOrMoreChanges: "Select one or more changes",
+  appliedOldestToNewest: "applied oldest → newest",
+  viewed: "Viewed",
+  nextFile: "Next file",
+  backToFirstFile: "Back to first file",
+  copyPath: "Copy path",
+  inspect: "Inspect",
+  open: "Open",
+  show: "Show",
+  clear: "Clear",
+  details: "details",
 } as const;

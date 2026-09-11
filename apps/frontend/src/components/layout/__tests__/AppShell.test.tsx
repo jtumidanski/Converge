@@ -1,43 +1,71 @@
-import { screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
 import { describe, expect, it } from "vitest";
 import { AppShell } from "@/components/layout/AppShell";
-import { renderWithProviders } from "@/test/render";
+import { ThemeProvider } from "@/components/theme/ThemeProvider";
+import { useBreadcrumbs } from "@/lib/breadcrumbs/useBreadcrumbs";
+
+function Publisher({ label }: { label: string }) {
+  useBreadcrumbs([{ label: "Reviews", to: "/" }, { label }]);
+  return <p>page body</p>;
+}
+
+function renderShell(children: React.ReactNode) {
+  return render(
+    <ThemeProvider>
+      <MemoryRouter>
+        <AppShell>{children}</AppShell>
+      </MemoryRouter>
+    </ThemeProvider>,
+  );
+}
 
 describe("AppShell", () => {
-  it("renders its children", () => {
-    renderWithProviders(
-      <AppShell>
-        <p>page content</p>
-      </AppShell>,
-    );
-    expect(screen.getByText("page content")).toBeInTheDocument();
+  it("renders the brand block as a link to the root", () => {
+    renderShell(<p>body</p>);
+    const brand = screen.getByRole("link", { name: /converge/i });
+    expect(brand).toHaveAttribute("href", "/");
   });
 
-  it("renders the wordmark as a link home", () => {
-    renderWithProviders(
-      <AppShell>
-        <p>page content</p>
-      </AppShell>,
-    );
-    expect(screen.getByRole("link", { name: "Converge" })).toHaveAttribute("href", "/");
+  it("keeps the theme toggle in the top bar", () => {
+    renderShell(<p>body</p>);
+    expect(screen.getByRole("button", { name: /theme/i })).toBeInTheDocument();
   });
 
-  it("renders the theme control", () => {
-    renderWithProviders(
-      <AppShell>
-        <p>page content</p>
-      </AppShell>,
-    );
-    expect(screen.getByRole("button", { name: /change theme/i })).toBeInTheDocument();
+  it("shows Reviews as the default breadcrumb when no page publishes one", () => {
+    renderShell(<p>body</p>);
+    expect(screen.getByRole("navigation", { name: /breadcrumb/i })).toHaveTextContent("Reviews");
   });
 
-  it("puts the children in a main landmark below the banner", () => {
-    renderWithProviders(
-      <AppShell>
-        <p>page content</p>
-      </AppShell>,
+  it("renders the segments a page publishes", () => {
+    renderShell(<Publisher label="atlas/server" />);
+    const nav = screen.getByRole("navigation", { name: /breadcrumb/i });
+    expect(nav).toHaveTextContent("Reviews");
+    expect(nav).toHaveTextContent("atlas/server");
+    expect(screen.getAllByRole("link", { name: "Reviews" })[0]).toHaveAttribute("href", "/");
+  });
+
+  it("falls back to the default once the publishing page unmounts", () => {
+    const { rerender } = renderShell(<Publisher label="atlas/server" />);
+    rerender(
+      <ThemeProvider>
+        <MemoryRouter>
+          <AppShell>
+            <p>body</p>
+          </AppShell>
+        </MemoryRouter>
+      </ThemeProvider>,
     );
-    expect(screen.getByRole("banner")).toBeInTheDocument();
-    expect(screen.getByRole("main")).toContainElement(screen.getByText("page content"));
+    expect(screen.getByRole("navigation", { name: /breadcrumb/i })).not.toHaveTextContent(
+      "atlas/server",
+    );
+  });
+
+  it("puts page content in the one shared centred container", () => {
+    renderShell(<p>body</p>);
+    const main = screen.getByRole("main");
+    expect(main.className).toContain("mx-auto");
+    expect(main.className).toContain("max-w-[80rem]");
+    expect(main.className).toContain("px-6");
   });
 });
