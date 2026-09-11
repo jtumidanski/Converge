@@ -21,4 +21,20 @@ describe("safeNext", () => {
   it("accepts the root path", () => {
     expect(safeNext("?next=%2F")).toBe("/");
   });
+
+  it("rejects a backslash-based protocol-relative path", () => {
+    expect(safeNext("?next=%2F%5Cevil.test")).toBe("/");
+  });
+
+  it("rejects a backslash-slash mixed protocol-relative path", () => {
+    expect(safeNext("?next=%2F%5C%2Fevil.test")).toBe("/");
+  });
+
+  it("rejects a double-backslash protocol-relative path", () => {
+    expect(safeNext("?next=%2F%5C%5Cevil.test")).toBe("/");
+  });
+
+  it("still accepts a legitimate same-origin path with a query string", () => {
+    expect(safeNext("?next=%2Fa%2Fb%3Fc%3Dd")).toBe("/a/b?c=d");
+  });
 });

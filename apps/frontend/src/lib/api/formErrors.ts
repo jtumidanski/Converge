@@ -10,7 +10,7 @@ import { isApiError, messageFor } from "@/lib/api/errors";
  */
 export function safeNext(search: string): string {
   const raw = new URLSearchParams(search).get("next");
-  if (!raw || !raw.startsWith("/") || raw.startsWith("//")) {
+  if (!raw || !raw.startsWith("/") || raw.startsWith("//") || raw.includes("\\")) {
     return "/";
   }
   return raw;
