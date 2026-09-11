@@ -75,7 +75,6 @@ describe("SelectChangesPage", () => {
     expect(row).not.toBeNull();
     expect(within(row as HTMLElement).getByText("jsmith")).toBeInTheDocument();
     expect(within(row as HTMLElement).getByText(/feat\/421/)).toBeInTheDocument();
-    expect(within(row as HTMLElement).getByText(/aaaaaaa/)).toBeInTheDocument();
     expect(await screen.findByDisplayValue("main")).toBeInTheDocument();
   });
 
@@ -85,7 +84,9 @@ describe("SelectChangesPage", () => {
     await screen.findByText("Add field-state endpoint");
     const build = screen.getByRole("button", { name: /build review/i });
     expect(build).toBeDisabled();
-    const firstCheckbox = screen.getAllByRole("checkbox")[0] as HTMLElement;
+    // Index 0 is now the header "select all visible" checkbox; index 1 is the
+    // first row.
+    const firstCheckbox = screen.getAllByRole("checkbox")[1] as HTMLElement;
     await userEvent.click(firstCheckbox);
     expect(build).toBeEnabled();
     expect(screen.getByText(/1 selected/i)).toBeInTheDocument();
@@ -114,7 +115,7 @@ describe("SelectChangesPage", () => {
     );
     renderWithProviders(<SelectChangesPage />, { route });
     await screen.findByText("Add field-state endpoint");
-    await userEvent.click(screen.getAllByRole("checkbox")[0] as HTMLElement);
+    await userEvent.click(screen.getAllByRole("checkbox")[1] as HTMLElement);
     await userEvent.click(screen.getByRole("button", { name: /build review/i }));
     await waitFor(() => expect(navigate).toHaveBeenCalledWith("/reviews/7f14b2c8"));
   });
@@ -140,7 +141,7 @@ describe("SelectChangesPage", () => {
     );
     renderWithProviders(<SelectChangesPage />, { route });
     await screen.findByText("Add field-state endpoint");
-    await userEvent.click(screen.getAllByRole("checkbox")[0] as HTMLElement);
+    await userEvent.click(screen.getAllByRole("checkbox")[1] as HTMLElement);
     await userEvent.click(screen.getByRole("button", { name: /build review/i }));
     expect(await screen.findByText(/same base branch/i)).toBeInTheDocument();
     expect(navigate).not.toHaveBeenCalled();

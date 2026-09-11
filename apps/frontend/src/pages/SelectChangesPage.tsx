@@ -5,7 +5,7 @@ import { PageHeader } from "@/components/common/PageHeader";
 import { ErrorBanner } from "@/components/common/ErrorBanner";
 import { Pagination } from "@/components/common/Pagination";
 import { ChangeSearch } from "@/components/features/changes/ChangeSearch";
-import { ChangeTable } from "@/components/features/changes/ChangeTable";
+import { ChangeTable, buildRows } from "@/components/features/changes/ChangeTable";
 import { SelectionBar } from "@/components/features/changes/SelectionBar";
 import { Input } from "@/components/ui/input";
 import { useChanges } from "@/lib/hooks/api/useChanges";
@@ -57,6 +57,20 @@ export function SelectChangesPage() {
   // must still be fetched untargeted — the user sees the repository error separately.
   const changes = useChanges(providerId, repository, changeParams, !repositoryQuery.isPending);
   const createReview = useCreateReview();
+
+  // This page precedes the create-review page rewrite: it adapts the grouped
+  // ChangeTable's interface without offering grouping or bot-hiding controls.
+  const visibleChanges = changes.data?.items ?? [];
+  const allSelected =
+    visibleChanges.length > 0 &&
+    visibleChanges.every((c) => selection.isSelected(c.attributes.number));
+  const someSelected =
+    !allSelected && visibleChanges.some((c) => selection.isSelected(c.attributes.number));
+  function toggleAllVisible(select: boolean) {
+    for (const c of visibleChanges) {
+      if (select !== selection.isSelected(c.attributes.number)) selection.toggle(c);
+    }
+  }
 
   if (!providerId || !repository) {
     return (
@@ -129,7 +143,7 @@ export function SelectChangesPage() {
         />
       ) : (
         <ChangeTable
-          changes={changes.data?.items ?? []}
+          rows={buildRows(visibleChanges, null, 0, selection.isSelected)}
           // The changes query is disabled until the repository lookup settles,
           // and a disabled query reports isLoading=false with data=undefined.
           // Without the second term the table claims "No merged PRs/MRs" on
@@ -137,6 +151,11 @@ export function SelectChangesPage() {
           loading={changes.isLoading || repositoryQuery.isPending}
           isSelected={selection.isSelected}
           onToggle={selection.toggle}
+          onToggleGroup={() => {}}
+          onToggleAll={toggleAllVisible}
+          allSelected={allSelected}
+          someSelected={someSelected}
+          onShowBots={() => {}}
         />
       )}
       <Pagination
