@@ -107,4 +107,79 @@ describe("DiffPane", () => {
     await userEvent.click(screen.getByRole("button", { name: /try again/i }));
     expect(onRetry).toHaveBeenCalled();
   });
+
+  describe("status badge", () => {
+    it("displays 'M' in amber for modified files", () => {
+      renderPane({ fileDiff: diff("src/modified.ts") });
+      const statusBadge = screen.getByText("M");
+      expect(statusBadge).toBeInTheDocument();
+      expect(statusBadge).toHaveClass("text-amber-500");
+    });
+
+    it("displays 'D' in destructive for deleted files", () => {
+      renderPane({
+        fileDiff: {
+          type: "review-file-diffs",
+          id: "src/deleted.ts",
+          attributes: {
+            path: "src/deleted.ts",
+            previousPath: "",
+            status: "deleted",
+            additions: 0,
+            deletions: 10,
+            binary: false,
+            truncated: false,
+            diff: "diff --git a/x b/x\n",
+          },
+        },
+      });
+      const statusBadge = screen.getByText("D");
+      expect(statusBadge).toBeInTheDocument();
+      expect(statusBadge).toHaveClass("text-destructive");
+    });
+
+    it("displays 'A' in green for added files", () => {
+      renderPane({
+        fileDiff: {
+          type: "review-file-diffs",
+          id: "src/added.ts",
+          attributes: {
+            path: "src/added.ts",
+            previousPath: "",
+            status: "added",
+            additions: 42,
+            deletions: 0,
+            binary: false,
+            truncated: false,
+            diff: "diff --git a/x b/x\n",
+          },
+        },
+      });
+      const statusBadge = screen.getByText("A");
+      expect(statusBadge).toBeInTheDocument();
+      expect(statusBadge).toHaveClass("text-green-500");
+    });
+
+    it("displays 'R' in blue for renamed files", () => {
+      renderPane({
+        fileDiff: {
+          type: "review-file-diffs",
+          id: "src/renamed.ts",
+          attributes: {
+            path: "src/renamed.ts",
+            previousPath: "src/old-name.ts",
+            status: "renamed",
+            additions: 5,
+            deletions: 2,
+            binary: false,
+            truncated: false,
+            diff: "diff --git a/x b/x\n",
+          },
+        },
+      });
+      const statusBadge = screen.getByText("R");
+      expect(statusBadge).toBeInTheDocument();
+      expect(statusBadge).toHaveClass("text-blue-500");
+    });
+  });
 });
