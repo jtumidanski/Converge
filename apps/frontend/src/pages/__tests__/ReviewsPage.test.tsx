@@ -8,6 +8,19 @@ import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import { ReviewsPage } from "@/pages/ReviewsPage";
 import { HttpResponse, http, listDoc, server } from "@/test/server";
 import { recordRecent } from "@/lib/storage/recents";
+import { useBreadcrumbs } from "@/lib/breadcrumbs/useBreadcrumbs";
+import { strings } from "@/lib/strings";
+
+// Breadcrumbs.tsx falls back to a literal "Reviews" segment when nothing is
+// published, so a text assertion alone cannot distinguish ReviewsPage
+// actually calling useBreadcrumbs from the shell's own default rendering the
+// same word. Spy on the real hook (still calling through to it) so the test
+// asserts the page published the segment, not just that "Reviews" is on
+// screen somehow.
+vi.mock("@/lib/breadcrumbs/useBreadcrumbs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/breadcrumbs/useBreadcrumbs")>();
+  return { ...actual, useBreadcrumbs: vi.fn(actual.useBreadcrumbs) };
+});
 
 function repo(fullName: string) {
   const [namespace = "", name = ""] = fullName.split("/");
@@ -81,6 +94,7 @@ describe("ReviewsPage", () => {
     await waitFor(() =>
       expect(screen.getByRole("navigation", { name: /breadcrumb/i })).toHaveTextContent("Reviews"),
     );
+    expect(useBreadcrumbs).toHaveBeenCalledWith([{ label: strings.reviews }]);
   });
 
   it("opens the drawer from the start-a-new-review row", async () => {
@@ -145,5 +159,14 @@ describe("ReviewsPage", () => {
     const input = await screen.findByPlaceholderText(/search repositories/i);
     await userEvent.type(input, "atlas/missing{Enter}");
     expect(await screen.findByText(/could not be found/i)).toBeInTheDocument();
+  });
+
+  it("shows an inline error when the typed value does not parse as a repository", async () => {
+    seed();
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /start a new review/i }));
+    const input = await screen.findByPlaceholderText(/search repositories/i);
+    await userEvent.type(input, "not a repo name{Enter}");
+    expect(await screen.findByText(strings.repositoryInvalidFormat)).toBeInTheDocument();
   });
 });

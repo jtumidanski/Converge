@@ -47,6 +47,23 @@ describe("isValidRepositoryName", () => {
   it("mirrors the backend owner/name rule", () => {
     expect(isValidRepositoryName("atlas/server")).toBe(true);
     expect(isValidRepositoryName("atlas")).toBe(false);
-    expect(isValidRepositoryName("atlas/.hidden")).toBe(false);
+    // The backend (gitx.ValidateRepoFullName) only rejects a leading `.`, `-`,
+    // or `/` on the whole string, plus `.`/`..`/`..`-containing segments — not
+    // any segment merely starting with `.` or `-`. `org/.github` is a real
+    // GitHub repository the backend accepts, so the client must too.
+    expect(isValidRepositoryName("atlas/.hidden")).toBe(true);
+    expect(isValidRepositoryName("org/.github")).toBe(true);
+  });
+
+  it.each([
+    ["..", "a bare double-dot"],
+    ["a/../b", "a double-dot segment"],
+    ["a/..b/c", "a segment containing .. without being exactly .."],
+    ["/atlas/server", "a leading slash"],
+    ["-atlas/server", "a leading dash"],
+    [".atlas/server", "a leading dot on the whole string"],
+    ["atlas//server", "an empty segment"],
+  ])("rejects %s (%s)", (input) => {
+    expect(isValidRepositoryName(input)).toBe(false);
   });
 });

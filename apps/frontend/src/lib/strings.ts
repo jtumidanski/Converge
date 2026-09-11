@@ -55,6 +55,7 @@ export const strings = {
   clear: "Clear",
   details: "details",
   repositoryNotFound: (fullName: string) => `${fullName} could not be found on this provider.`,
+  repositoryInvalidFormat: "That doesn't look like a repository name or URL.",
   repositoryCheckFailed: "That repository could not be checked.",
   selectAProvider: "Select a provider",
   searchRepositoriesPlaceholder: "Search repositories, or paste owner/name",

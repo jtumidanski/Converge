@@ -93,7 +93,10 @@ export function NewReviewSheet({ open, onOpenChange }: NewReviewSheetProps) {
   async function resolveTyped(): Promise<void> {
     if (providerId === undefined) return;
     const fullName = parseRepositoryInput(query, provider?.attributes.baseUrl);
-    if (fullName === null) return;
+    if (fullName === null) {
+      if (query.trim() !== "") setInlineError(strings.repositoryInvalidFormat);
+      return;
+    }
     setInlineError(null);
     setResolving(true);
     try {
