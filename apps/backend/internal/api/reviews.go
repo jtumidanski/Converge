@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jtumidanski/converge/internal/diff"
+	"github.com/jtumidanski/converge/internal/identity"
 	"github.com/jtumidanski/converge/internal/jsonapi"
 	"github.com/jtumidanski/converge/internal/review"
 	"github.com/jtumidanski/converge/internal/session"
@@ -88,7 +89,9 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, s.deps.Log, err)
 		return
 	}
-	sess, err := s.deps.Service.Create(r.Context(), review.CreateInput{
+	// Every handler in this file acts standalone until a later task derives
+	// the caller's scope from the authenticated request.
+	sess, err := s.deps.Service.Create(r.Context(), identity.Standalone(), review.CreateInput{
 		ProviderID: attrs.Provider, Repository: attrs.Repository, BaseBranch: attrs.BaseBranch, Changes: attrs.Changes,
 	})
 	if err != nil {
@@ -102,7 +105,7 @@ func (s *server) createReview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) listReviews(w http.ResponseWriter, _ *http.Request) {
-	sessions := s.deps.Service.List()
+	sessions := s.deps.Service.List(identity.Standalone())
 	out := make([]jsonapi.Resource, 0, len(sessions))
 	for _, sess := range sessions {
 		out = append(out, reviewResource(sess))
@@ -122,7 +125,7 @@ func (s *server) sessionFor(w http.ResponseWriter, r *http.Request) (session.Ses
 		_ = jsonapi.WriteError(w, http.StatusNotFound, "NOT_FOUND", jsonapi.StatusTitle(http.StatusNotFound), "No review exists with that id.")
 		return session.Session{}, false
 	}
-	sess, ok := s.deps.Service.Get(id)
+	sess, ok := s.deps.Service.Get(id, identity.Standalone())
 	if !ok {
 		if s.deps.Service.Corrupted(id) {
 			s.deps.Log.Error("session record unreadable", slog.String("session", id))
@@ -149,7 +152,7 @@ func (s *server) getReview(w http.ResponseWriter, r *http.Request) {
 func (s *server) deleteReview(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := workspace.ValidateSessionID(id); err == nil {
-		if err := s.deps.Service.Finish(r.Context(), id); err != nil && !errors.Is(err, session.ErrNotFound) {
+		if err := s.deps.Service.Finish(r.Context(), id, identity.Standalone()); err != nil && !errors.Is(err, session.ErrNotFound) {
 			s.deps.Log.Warn("finish failed", "session", id, "error", err)
 		}
 	}

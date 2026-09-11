@@ -63,7 +63,7 @@ func asReviewError(err error) *session.ReviewError {
 //
 // Every returned error is a *session.ReviewError; any ambiguity in base
 // selection fails with CodeBaseUndetermined rather than guessing.
-func (r *Resolver) Resolve(ctx context.Context, p provider.GitProvider, repo provider.Repository, baseBranch string, numbers []int, progress func(string)) (Resolved, error) {
+func (r *Resolver) Resolve(ctx context.Context, ns mirror.Namespace, p provider.GitProvider, repo provider.Repository, baseBranch string, numbers []int, progress func(string)) (Resolved, error) {
 	report := func(stage string) {
 		if progress != nil {
 			progress(stage)
@@ -100,7 +100,7 @@ func (r *Resolver) Resolve(ctx context.Context, p provider.GitProvider, repo pro
 	// check cannot be pushed earlier than this: it needs to lose to
 	// BASE_UNDETERMINED specifically when the base branch itself is absent.
 	report(session.StageUpdatingRepo)
-	mirrorPath, err := r.mirrors.Ensure(ctx, mirror.RootNamespace(), p, repo)
+	mirrorPath, err := r.mirrors.Ensure(ctx, ns, p, repo)
 	if err != nil {
 		if re := MapProviderError(p.ID(), repo.FullName(), err); re != nil {
 			return Resolved{}, re
@@ -147,7 +147,7 @@ func (r *Resolver) Resolve(ctx context.Context, p provider.GitProvider, repo pro
 			}
 			return Resolved{}, &session.ReviewError{Code: session.CodeProviderUnavailable, Message: MsgProviderUnavailable(p.ID())}
 		}
-		landing, err := r.landingWithFetch(ctx, p, repo, objects, cr, commits)
+		landing, err := r.landingWithFetch(ctx, ns, p, repo, objects, cr, commits)
 		if err != nil {
 			if re := asReviewError(err); re != nil {
 				return Resolved{}, re
@@ -201,13 +201,13 @@ func classifyRevParseErr(err error, first string, changeNumber int) *session.Rev
 }
 
 // landingWithFetch resolves the landing commits, retrying once after fetching missing SHAs (FR-5.8).
-func (r *Resolver) landingWithFetch(ctx context.Context, p provider.GitProvider, repo provider.Repository, o mirror.ObjectReader, cr provider.ChangeRequest, commits []provider.Commit) (Landing, error) {
+func (r *Resolver) landingWithFetch(ctx context.Context, ns mirror.Namespace, p provider.GitProvider, repo provider.Repository, o mirror.ObjectReader, cr provider.ChangeRequest, commits []provider.Commit) (Landing, error) {
 	landing, err := ResolveLanding(ctx, o, cr, commits)
 	if err == nil || !errors.Is(err, ErrNoCandidate) {
 		return landing, err
 	}
 	for _, sha := range cr.LandingCandidates() {
-		if fetchErr := r.mirrors.FetchSHA(ctx, mirror.RootNamespace(), p, repo, sha); fetchErr != nil {
+		if fetchErr := r.mirrors.FetchSHA(ctx, ns, p, repo, sha); fetchErr != nil {
 			r.log.Debug("fetch-by-sha failed", slog.String("repository", repo.FullName()), slog.String("sha", shortSHA(sha)))
 			continue
 		}

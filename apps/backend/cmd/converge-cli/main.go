@@ -15,6 +15,7 @@ import (
 
 	"github.com/jtumidanski/converge/internal/app"
 	"github.com/jtumidanski/converge/internal/buildinfo"
+	"github.com/jtumidanski/converge/internal/identity"
 	"github.com/jtumidanski/converge/internal/review"
 	"github.com/jtumidanski/converge/internal/session"
 )
@@ -77,7 +78,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = application.Close() }()
 
-	sess, err := application.Service.Create(ctx, review.CreateInput{ProviderID: *providerID, Repository: *repo, BaseBranch: *base, Changes: changes})
+	// converge-cli always acts on its own behalf, never a hosted user's.
+	sess, err := application.Service.Create(ctx, identity.Standalone(), review.CreateInput{ProviderID: *providerID, Repository: *repo, BaseBranch: *base, Changes: changes})
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "converge-cli: %v\n", err)
 		return exitCodeForError(err)
@@ -109,7 +111,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// written to metadata.json and describes a real, completed build.
 	var diffErr error
 	if final.Status() == session.StatusReady {
-		src, err := application.Service.CombinedDiffPath(final.ID())
+		src, err := application.Service.CombinedDiffPath(final.ID(), identity.Standalone())
 		if err != nil {
 			diffErr = fmt.Errorf("combined diff: %w", err)
 		} else if err := copyFile(src, filepath.Join(dir, review.CombinedDiffFile)); err != nil {
@@ -128,7 +130,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		code = exitCodeFor(final.Status(), "")
 	}
 	if *cleanup {
-		if err := application.Service.Finish(ctx, final.ID()); err != nil {
+		if err := application.Service.Finish(ctx, final.ID(), identity.Standalone()); err != nil {
 			_, _ = fmt.Fprintf(stderr, "converge-cli: cleanup: %v\n", err)
 		}
 	}

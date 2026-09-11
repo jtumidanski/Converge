@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jtumidanski/converge/internal/gitx"
+	"github.com/jtumidanski/converge/internal/identity"
 	"github.com/jtumidanski/converge/internal/mirror"
 	"github.com/jtumidanski/converge/internal/provider"
 	"github.com/jtumidanski/converge/internal/provider/fake"
@@ -113,12 +114,13 @@ func (h *watchHandler) WithGroup(name string) slog.Handler {
 }
 
 type serviceFixture struct {
-	svc   *Service
-	prov  *fake.Provider
-	src   *testutil.Repo
-	ws    *workspace.Manager
-	app   *hookApplicator
-	watch *logWatch
+	svc     *Service
+	prov    *fake.Provider
+	src     *testutil.Repo
+	ws      *workspace.Manager
+	mirrors *mirror.Cache
+	app     *hookApplicator
+	watch   *logWatch
 
 	mu      sync.Mutex
 	nowHook func()
@@ -191,7 +193,7 @@ func newServiceFixtureWith(t *testing.T, maxConcurrentBuilds int) *serviceFixtur
 	cleaner := NewCleaner(mirrors, ws, testLog())
 	// The store keeps time.Now so a fixture now-hook cannot recurse into it.
 	store := session.NewStore(ws.Root(), 24*time.Hour, cleaner, testLog(), time.Now)
-	f := &serviceFixture{prov: p, src: src, ws: ws, watch: newLogWatch(),
+	f := &serviceFixture{prov: p, src: src, ws: ws, mirrors: mirrors, watch: newLogWatch(),
 		app: &hookApplicator{delegate: NewCherryPickApplicator(runner, testLog())}}
 	f.svc = NewService(Deps{
 		Providers: provider.NewStaticResolver(registry), Mirrors: mirrors, Workspaces: ws, Store: store,
@@ -205,7 +207,19 @@ func newServiceFixtureWith(t *testing.T, maxConcurrentBuilds int) *serviceFixtur
 // create makes a CREATING session for change #1.
 func (f *serviceFixture) create(t *testing.T) session.Session {
 	t.Helper()
-	s, err := f.svc.Create(context.Background(), CreateInput{
+	s, err := f.svc.Create(context.Background(), identity.Standalone(), CreateInput{
+		ProviderID: "fake", Repository: "atlas/server", Changes: []int{1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// createFor is create scoped to a caller, for the owner/visibility tests.
+func (f *serviceFixture) createFor(t *testing.T, scope identity.Scope) session.Session {
+	t.Helper()
+	s, err := f.svc.Create(context.Background(), scope, CreateInput{
 		ProviderID: "fake", Repository: "atlas/server", Changes: []int{1},
 	})
 	if err != nil {
@@ -219,7 +233,7 @@ func (f *serviceFixture) awaitTerminal(t *testing.T, id string, within time.Dura
 	t.Helper()
 	deadline := time.Now().Add(within)
 	for {
-		got, _ := f.svc.Get(id)
+		got, _ := f.svc.Get(id, identity.Standalone())
 		if got.Status() != session.StatusCreating {
 			return got
 		}
@@ -233,7 +247,7 @@ func (f *serviceFixture) awaitTerminal(t *testing.T, id string, within time.Dura
 func TestServiceBuildHappyPath(t *testing.T) {
 	f := newServiceFixture(t)
 	ctx := context.Background()
-	s, err := f.svc.Create(ctx, CreateInput{ProviderID: "fake", Repository: "atlas/server", Changes: []int{1}})
+	s, err := f.svc.Create(ctx, identity.Standalone(), CreateInput{ProviderID: "fake", Repository: "atlas/server", Changes: []int{1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,18 +261,18 @@ func TestServiceBuildHappyPath(t *testing.T) {
 	if done.BaseSHA() == "" || done.HeadSHA() == "" || done.Totals() == nil || done.Totals().Files != 1 {
 		t.Fatalf("session = %+v totals=%+v", done, done.Totals())
 	}
-	files, err := f.svc.Files(done.ID())
+	files, err := f.svc.Files(done.ID(), identity.Standalone())
 	if err != nil || len(files) != 1 || files[0].Path != "a.txt" {
 		t.Fatalf("files = %v %v", files, err)
 	}
-	fd, err := f.svc.FileDiff(ctx, done.ID(), "a.txt")
+	fd, err := f.svc.FileDiff(ctx, done.ID(), "a.txt", identity.Standalone())
 	if err != nil || !strings.Contains(fd.Diff, "+a") {
 		t.Fatalf("file diff = %+v %v", fd, err)
 	}
-	if _, err := f.svc.FileDiff(ctx, done.ID(), "unrelated.txt"); err == nil {
+	if _, err := f.svc.FileDiff(ctx, done.ID(), "unrelated.txt", identity.Standalone()); err == nil {
 		t.Error("unknown file must fail")
 	}
-	p, err := f.svc.CombinedDiffPath(done.ID())
+	p, err := f.svc.CombinedDiffPath(done.ID(), identity.Standalone())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,19 +281,19 @@ func TestServiceBuildHappyPath(t *testing.T) {
 		t.Errorf("combined diff wrong:\n%s", b)
 	}
 	// finish removes everything
-	if err := f.svc.Finish(ctx, done.ID()); err != nil {
+	if err := f.svc.Finish(ctx, done.ID(), identity.Standalone()); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := f.svc.Get(done.ID()); got.Status() != session.StatusFinished {
+	if got, _ := f.svc.Get(done.ID(), identity.Standalone()); got.Status() != session.StatusFinished {
 		t.Errorf("status = %s", got.Status())
 	}
 	if _, err := os.Stat(filepath.Dir(p)); !os.IsNotExist(err) {
 		t.Error("session dir remains")
 	}
-	if err := f.svc.Finish(ctx, done.ID()); err != nil {
+	if err := f.svc.Finish(ctx, done.ID(), identity.Standalone()); err != nil {
 		t.Errorf("finish must be idempotent: %v", err)
 	}
-	if _, err := f.svc.Files(done.ID()); !errors.Is(err, ErrNotReady) {
+	if _, err := f.svc.Files(done.ID(), identity.Standalone()); !errors.Is(err, ErrNotReady) {
 		t.Errorf("files after finish: %v", err)
 	}
 }
@@ -288,16 +302,16 @@ func TestServiceCreateValidationAndUnknownProvider(t *testing.T) {
 	f := newServiceFixture(t)
 	ctx := context.Background()
 	var ie *InputError
-	if _, err := f.svc.Create(ctx, CreateInput{ProviderID: "nope", Repository: "atlas/server", Changes: []int{1}}); !errors.As(err, &ie) || ie.Code != CodeInvalidProvider {
+	if _, err := f.svc.Create(ctx, identity.Standalone(), CreateInput{ProviderID: "nope", Repository: "atlas/server", Changes: []int{1}}); !errors.As(err, &ie) || ie.Code != CodeInvalidProvider {
 		t.Fatalf("unknown provider: %v", err)
 	}
-	if _, err := f.svc.Create(ctx, CreateInput{ProviderID: "fake", Repository: "../x", Changes: []int{1}}); !errors.As(err, &ie) || ie.Code != CodeInvalidRepository {
+	if _, err := f.svc.Create(ctx, identity.Standalone(), CreateInput{ProviderID: "fake", Repository: "../x", Changes: []int{1}}); !errors.As(err, &ie) || ie.Code != CodeInvalidRepository {
 		t.Fatalf("bad repo: %v", err)
 	}
-	if _, err := f.svc.Create(ctx, CreateInput{ProviderID: "fake", Repository: "atlas/nope", Changes: []int{1}}); err == nil {
+	if _, err := f.svc.Create(ctx, identity.Standalone(), CreateInput{ProviderID: "fake", Repository: "atlas/nope", Changes: []int{1}}); err == nil {
 		t.Fatal("unknown repository must fail")
 	}
-	if _, err := f.svc.Create(ctx, CreateInput{ProviderID: "fake", Repository: "atlas/server"}); !errors.As(err, &ie) || ie.Code != CodeInvalidChanges {
+	if _, err := f.svc.Create(ctx, identity.Standalone(), CreateInput{ProviderID: "fake", Repository: "atlas/server"}); !errors.As(err, &ie) || ie.Code != CodeInvalidChanges {
 		t.Fatalf("empty changes: %v", err)
 	}
 }
@@ -308,7 +322,7 @@ func TestServiceBuildFailureIsRecorded(t *testing.T) {
 	open, _ := provider.NewChangeRequestBuilder().SetProviderID("fake").SetRepository(mustRepo(t, f)).SetNumber(2).SetTitle("open").
 		SetTargetBranch("main").SetState(provider.StateOpen).Build()
 	f.prov.AddChange(open)
-	s, err := f.svc.Create(ctx, CreateInput{ProviderID: "fake", Repository: "atlas/server", Changes: []int{2}})
+	s, err := f.svc.Create(ctx, identity.Standalone(), CreateInput{ProviderID: "fake", Repository: "atlas/server", Changes: []int{2}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +330,7 @@ func TestServiceBuildFailureIsRecorded(t *testing.T) {
 	if done.Status() != session.StatusFailed || done.Error() == nil || done.Error().Code != session.CodeNotMerged {
 		t.Fatalf("done = %+v err=%+v", done, done.Error())
 	}
-	if _, err := f.svc.Files(done.ID()); !errors.Is(err, ErrNotReady) {
+	if _, err := f.svc.Files(done.ID(), identity.Standalone()); !errors.Is(err, ErrNotReady) {
 		t.Errorf("files on failed session: %v", err)
 	}
 }
@@ -357,7 +371,7 @@ func TestServiceStartBuildIsAsynchronous(t *testing.T) {
 	case <-time.After(60 * time.Second):
 		t.Fatal("the background build never reached Apply")
 	}
-	if got, _ := f.svc.Get(s.ID()); got.Status() != session.StatusCreating {
+	if got, _ := f.svc.Get(s.ID(), identity.Standalone()); got.Status() != session.StatusCreating {
 		t.Fatalf("status while the build is gated = %s, want CREATING", got.Status())
 	}
 
@@ -706,7 +720,7 @@ func TestServiceBuildRecordsFailureOnTheLiveSession(t *testing.T) {
 			s := f.create(t)
 			f.app.set(nil, tt.override)
 			done := f.svc.Build(context.Background(), s.ID())
-			stored, ok := f.svc.Get(s.ID())
+			stored, ok := f.svc.Get(s.ID(), identity.Standalone())
 			if !ok {
 				t.Fatal("session vanished")
 			}
@@ -746,13 +760,13 @@ func TestServiceBuildDoesNotResurrectATerminalSession(t *testing.T) {
 				return
 			}
 			once.Do(func() {
-				if err := f.svc.Finish(ctx, s.ID()); err != nil {
+				if err := f.svc.Finish(ctx, s.ID(), identity.Standalone()); err != nil {
 					t.Errorf("finish: %v", err)
 				}
 			})
 		})
 		done := f.svc.Build(ctx, s.ID())
-		stored, _ := f.svc.Get(s.ID())
+		stored, _ := f.svc.Get(s.ID(), identity.Standalone())
 		if done.Status() != session.StatusFinished {
 			t.Errorf("returned status = %s, want FINISHED", done.Status())
 		}
@@ -769,14 +783,14 @@ func TestServiceBuildDoesNotResurrectATerminalSession(t *testing.T) {
 		ctx := context.Background()
 		s := f.create(t)
 		f.app.set(func(actx context.Context, _ session.ResolvedChange) {
-			if err := f.svc.Finish(actx, s.ID()); err != nil {
+			if err := f.svc.Finish(actx, s.ID(), identity.Standalone()); err != nil {
 				t.Errorf("finish: %v", err)
 			}
 		}, func(context.Context, session.ResolvedChange) (ApplyResult, error) {
 			return ApplyResult{Outcome: OutcomeConflict, ConflictingPaths: []string{"a.txt"}}, nil
 		})
 		done := f.svc.Build(ctx, s.ID())
-		stored, _ := f.svc.Get(s.ID())
+		stored, _ := f.svc.Get(s.ID(), identity.Standalone())
 		if done.Status() != session.StatusFinished || stored.Status() != session.StatusFinished {
 			t.Errorf("returned = %s stored = %s, want FINISHED", done.Status(), stored.Status())
 		}
@@ -796,7 +810,7 @@ func TestServiceProgressDoesNotResurrectADiscardedSession(t *testing.T) {
 	f := newServiceFixture(t)
 	ctx := context.Background()
 	s := f.create(t)
-	if err := f.svc.Finish(ctx, s.ID()); err != nil {
+	if err := f.svc.Finish(ctx, s.ID(), identity.Standalone()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(f.ws.SessionDir(s.ID())); !os.IsNotExist(err) {
@@ -809,7 +823,7 @@ func TestServiceProgressDoesNotResurrectADiscardedSession(t *testing.T) {
 	if got.Stage() != session.StageDiffing {
 		t.Errorf("progress returned stage %q, want %q: the build's own copy must keep advancing", got.Stage(), session.StageDiffing)
 	}
-	stored, ok := f.svc.Get(s.ID())
+	stored, ok := f.svc.Get(s.ID(), identity.Standalone())
 	if !ok || stored.Status() != session.StatusFinished {
 		t.Errorf("stored status = %s ok = %v, want FINISHED: the stage write resurrected the session", stored.Status(), ok)
 	}
@@ -830,7 +844,7 @@ func TestServiceBuildCancellationIsRecordedAsInterrupted(t *testing.T) {
 		return ApplyResult{}, actx.Err()
 	})
 	done := f.svc.Build(ctx, s.ID())
-	stored, _ := f.svc.Get(s.ID())
+	stored, _ := f.svc.Get(s.ID(), identity.Standalone())
 	for _, got := range []session.Session{done, stored} {
 		if got.Status() != session.StatusFailed {
 			t.Fatalf("status = %s, want FAILED", got.Status())
@@ -943,7 +957,7 @@ func TestServiceStartBuildDrainsAQueuedBuildOnShutdown(t *testing.T) {
 	case <-time.After(60 * time.Second):
 		t.Fatal("the queued build never drained; it must not wait for a slot on a dead context")
 	}
-	if got, _ := f.svc.Get(queued.ID()); got.Status() != session.StatusCreating {
+	if got, _ := f.svc.Get(queued.ID(), identity.Standalone()); got.Status() != session.StatusCreating {
 		t.Errorf("drained session status = %s, want CREATING so LoadAll can mark it INTERRUPTED", got.Status())
 	}
 
@@ -968,7 +982,7 @@ func TestServiceBuildTimeoutIsNotReportedAsARestart(t *testing.T) {
 		return ApplyResult{}, fmt.Errorf("cherry-pick: %w", actx.Err())
 	})
 	done := f.svc.Build(expired, s.ID())
-	stored, _ := f.svc.Get(s.ID())
+	stored, _ := f.svc.Get(s.ID(), identity.Standalone())
 	for _, got := range []session.Session{done, stored} {
 		if got.Status() != session.StatusFailed {
 			t.Fatalf("status = %s, want FAILED", got.Status())
@@ -1025,4 +1039,210 @@ func mustRepo(t *testing.T, f *serviceFixture) provider.Repository {
 		t.Fatal(err)
 	}
 	return r
+}
+
+// sessionRecordBytes reads the raw session.json for id, the same file the
+// store itself writes (internal/session/store.go's recordFile).
+func sessionRecordBytes(t *testing.T, f *serviceFixture, id string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(f.ws.Root(), id, "session.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// TestCreateRecordsTheCallersOwner covers Task 12: Create stamps the owner
+// from the caller's scope, and that owner reaches the persisted record.
+func TestCreateRecordsTheCallersOwner(t *testing.T) {
+	f := newServiceFixture(t)
+	const owner = "abcdef0123456789"
+	s := f.createFor(t, identity.ForUser(owner))
+	if s.Owner() != owner {
+		t.Fatalf("owner = %q, want %q", s.Owner(), owner)
+	}
+	if b := sessionRecordBytes(t, f, s.ID()); !strings.Contains(string(b), `"owner"`) {
+		t.Errorf("session.json missing owner key: %s", b)
+	}
+}
+
+// TestCreateInStandaloneLeavesOwnerEmpty covers FR-6.1: a standalone caller
+// stamps no owner at all, so an existing deployment's records are
+// byte-for-byte what they always were.
+func TestCreateInStandaloneLeavesOwnerEmpty(t *testing.T) {
+	f := newServiceFixture(t)
+	s := f.createFor(t, identity.Standalone())
+	if s.Owner() != "" {
+		t.Fatalf("owner = %q, want empty", s.Owner())
+	}
+	if b := sessionRecordBytes(t, f, s.ID()); strings.Contains(string(b), `"owner"`) {
+		t.Errorf("session.json must have no owner key in standalone mode: %s", b)
+	}
+}
+
+// scopedRegistryResolver is a fake provider.Resolver that hands back a
+// different registry per user id, the seam TestCreateResolvesTheCallersRegistry
+// exercises.
+type scopedRegistryResolver struct {
+	registries map[string]*provider.Registry
+}
+
+func (r scopedRegistryResolver) Resolve(_ context.Context, scope identity.Scope) (*provider.Registry, error) {
+	if reg, ok := r.registries[scope.UserID()]; ok {
+		return reg, nil
+	}
+	return provider.NewRegistry(), nil
+}
+
+// TestCreateResolvesTheCallersRegistry is the seam that makes another user's
+// provider slug a 404 rather than a cross-user read: Create must resolve the
+// registry for the caller's own scope, not some other user's.
+func TestCreateResolvesTheCallersRegistry(t *testing.T) {
+	regA := provider.NewRegistry()
+	if err := regA.Register(fake.New("gh", provider.KindGitHub)); err != nil {
+		t.Fatal(err)
+	}
+	regB := provider.NewRegistry() // userB has no providers configured at all
+	svc := NewService(Deps{
+		Providers: scopedRegistryResolver{registries: map[string]*provider.Registry{"userA": regA, "userB": regB}},
+		Runner:    &gitx.FakeRunner{},
+	})
+	_, err := svc.Create(context.Background(), identity.ForUser("userB"), CreateInput{
+		ProviderID: "gh", Repository: "atlas/server", Changes: []int{1},
+	})
+	var ie *InputError
+	if !errors.As(err, &ie) || ie.Code != CodeInvalidProvider {
+		t.Fatalf("err = %v, want InputError{CodeInvalidProvider} (userB must not see userA's registry)", err)
+	}
+}
+
+// TestBuildUsesTheSessionsOwnerNotTheRequestScope is the important one: Build
+// takes no scope argument at all because it outlives the request that
+// triggered it, so it must read the owner back off the persisted session
+// (scopeOf) rather than trust anything the caller supplies.
+func TestBuildUsesTheSessionsOwnerNotTheRequestScope(t *testing.T) {
+	f := newServiceFixture(t)
+	const owner = "abcdef0123456789"
+	s := f.createFor(t, identity.ForUser(owner))
+	done := f.svc.Build(context.Background(), s.ID())
+	if done.Status() != session.StatusReady {
+		t.Fatalf("status = %s err = %+v", done.Status(), done.Error())
+	}
+	ns, err := mirror.NamespaceFor(identity.ForUser(owner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mirrorPath, err := f.mirrors.Path(ns, "fake", "atlas/server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(mirrorPath); err != nil {
+		t.Fatalf("mirror not found under the owner's namespace: %v (path %s)", err, mirrorPath)
+	}
+	if !strings.Contains(mirrorPath, filepath.Join("users", owner)) {
+		t.Fatalf("mirror path %q is not under users/%s", mirrorPath, owner)
+	}
+}
+
+// TestListAndGetAreScoped is a thin wrapper over Task 10's store behaviour:
+// each owner sees only their own sessions through the service.
+func TestListAndGetAreScoped(t *testing.T) {
+	f := newServiceFixture(t)
+	const ownerA = "aaaaaaaaaaaaaaaa"
+	const ownerB = "bbbbbbbbbbbbbbbb"
+	sA := f.createFor(t, identity.ForUser(ownerA))
+	sB := f.createFor(t, identity.ForUser(ownerB))
+
+	listA := f.svc.List(identity.ForUser(ownerA))
+	if len(listA) != 1 || listA[0].ID() != sA.ID() {
+		t.Fatalf("List(ownerA) = %v, want only %s", listA, sA.ID())
+	}
+	listB := f.svc.List(identity.ForUser(ownerB))
+	if len(listB) != 1 || listB[0].ID() != sB.ID() {
+		t.Fatalf("List(ownerB) = %v, want only %s", listB, sB.ID())
+	}
+
+	if _, ok := f.svc.Get(sA.ID(), identity.ForUser(ownerB)); ok {
+		t.Error("ownerB must not see ownerA's session")
+	}
+	if got, ok := f.svc.Get(sA.ID(), identity.ForUser(ownerA)); !ok || got.ID() != sA.ID() {
+		t.Errorf("ownerA must see their own session: got=%v ok=%v", got, ok)
+	}
+}
+
+// TestProviderInUseSeesOnlyNonTerminalSessions covers FR-5.7: an account
+// deletion must not be blocked by another user's session, nor by one of the
+// caller's own sessions that has already finished.
+func TestProviderInUseSeesOnlyNonTerminalSessions(t *testing.T) {
+	f := newServiceFixture(t)
+	const ownerA = "aaaaaaaaaaaaaaaa"
+	const ownerB = "bbbbbbbbbbbbbbbb"
+	sA := f.createFor(t, identity.ForUser(ownerA))
+	_ = f.createFor(t, identity.ForUser(ownerB))
+
+	if !f.svc.ProviderInUse(identity.ForUser(ownerA), "fake") {
+		t.Error("ownerA has an active session on fake, ProviderInUse must be true")
+	}
+	if err := f.svc.Finish(context.Background(), sA.ID(), identity.ForUser(ownerA)); err != nil {
+		t.Fatal(err)
+	}
+	if f.svc.ProviderInUse(identity.ForUser(ownerA), "fake") {
+		t.Error("ownerA's session is finished, ProviderInUse must be false")
+	}
+	if f.svc.ProviderInUse(identity.ForUser(ownerA), "gh") {
+		t.Error("ownerA has no session on gh, ProviderInUse must be false")
+	}
+}
+
+// TestPurgeUserRemovesSessionsAndTheMirrorNamespace covers FR-2.7/FR-6.6:
+// account deletion must remove both the user's sessions and their whole
+// mirror namespace, leaving other users untouched.
+func TestPurgeUserRemovesSessionsAndTheMirrorNamespace(t *testing.T) {
+	f := newServiceFixture(t)
+	const ownerA = "aaaaaaaaaaaaaaaa"
+	const ownerB = "bbbbbbbbbbbbbbbb"
+	sA := f.createFor(t, identity.ForUser(ownerA))
+	doneA := f.svc.Build(context.Background(), sA.ID())
+	if doneA.Status() != session.StatusReady {
+		t.Fatalf("ownerA build status = %s err = %+v", doneA.Status(), doneA.Error())
+	}
+	sB := f.createFor(t, identity.ForUser(ownerB))
+	doneB := f.svc.Build(context.Background(), sB.ID())
+	if doneB.Status() != session.StatusReady {
+		t.Fatalf("ownerB build status = %s err = %+v", doneB.Status(), doneB.Error())
+	}
+
+	if err := f.svc.PurgeUser(context.Background(), ownerA); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+
+	if _, err := os.Stat(f.ws.SessionDir(sA.ID())); !os.IsNotExist(err) {
+		t.Errorf("ownerA's session directory remains: %v", err)
+	}
+	nsA, err := mirror.NamespaceFor(identity.ForUser(ownerA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nsRootA, err := f.mirrors.NamespaceRoot(nsA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(nsRootA); !os.IsNotExist(err) {
+		t.Errorf("ownerA's mirror namespace remains: %v", err)
+	}
+
+	if _, err := os.Stat(f.ws.SessionDir(sB.ID())); err != nil {
+		t.Errorf("ownerB's session directory must be untouched: %v", err)
+	}
+	nsB, err := mirror.NamespaceFor(identity.ForUser(ownerB))
+	if err != nil {
+		t.Fatal(err)
+	}
+	nsRootB, err := f.mirrors.NamespaceRoot(nsB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(nsRootB); err != nil {
+		t.Errorf("ownerB's mirror namespace must be untouched: %v", err)
+	}
 }

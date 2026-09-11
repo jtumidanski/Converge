@@ -37,7 +37,11 @@ func NewCleaner(m *mirror.Cache, w *workspace.Manager, log *slog.Logger) *Cleane
 // is the part that must not be leaked. The failure to *remove the session
 // directory* is a real error and is returned as itself.
 func (c *Cleaner) Cleanup(ctx context.Context, s session.Session) error {
-	mirrorPath, err := c.mirrors.Path(mirror.RootNamespace(), s.ProviderID(), s.Repository())
+	ns, err := mirror.NamespaceFor(scopeOf(s))
+	if err != nil {
+		return fmt.Errorf("cleaner: %w", err)
+	}
+	mirrorPath, err := c.mirrors.Path(ns, s.ProviderID(), s.Repository())
 	if err != nil {
 		c.log.Debug("cleanup without mirror path",
 			slog.String("session", s.ID()),

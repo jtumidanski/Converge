@@ -104,7 +104,7 @@ func newResolveFixture(t *testing.T) *resolveFixture {
 func TestResolveOrdersAndComputesBase(t *testing.T) {
 	f := newResolveFixture(t)
 	var stages []string
-	got, err := f.resolver.Resolve(context.Background(), f.prov, f.repo, "main", []int{2, 1}, func(s string) { stages = append(stages, s) })
+	got, err := f.resolver.Resolve(context.Background(), mirror.RootNamespace(), f.prov, f.repo, "main", []int{2, 1}, func(s string) { stages = append(stages, s) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,20 +132,20 @@ func TestResolveRejectsUnmergedAndBadTargets(t *testing.T) {
 	f.prov.AddChange(other)
 
 	var re *session.ReviewError
-	_, err := f.resolver.Resolve(context.Background(), f.prov, f.repo, "main", []int{1, 3}, nil)
+	_, err := f.resolver.Resolve(context.Background(), mirror.RootNamespace(), f.prov, f.repo, "main", []int{1, 3}, nil)
 	if !errors.As(err, &re) || re.Code != session.CodeNotMerged || re.Change != 3 {
 		t.Fatalf("not merged: %v", err)
 	}
-	_, err = f.resolver.Resolve(context.Background(), f.prov, f.repo, "main", []int{1, 4}, nil)
+	_, err = f.resolver.Resolve(context.Background(), mirror.RootNamespace(), f.prov, f.repo, "main", []int{1, 4}, nil)
 	if !errors.As(err, &re) || re.Code != session.CodeIncompatibleTargets {
 		t.Fatalf("targets: %v", err)
 	}
-	_, err = f.resolver.Resolve(context.Background(), f.prov, f.repo, "nonexistent-branch", []int{1}, nil)
+	_, err = f.resolver.Resolve(context.Background(), mirror.RootNamespace(), f.prov, f.repo, "nonexistent-branch", []int{1}, nil)
 	if !errors.As(err, &re) || re.Code != session.CodeBaseUndetermined {
 		t.Fatalf("missing branch: %v", err)
 	}
 	f.prov.FailWith(provider.ErrAuth)
-	_, err = f.resolver.Resolve(context.Background(), f.prov, f.repo, "main", []int{1}, nil)
+	_, err = f.resolver.Resolve(context.Background(), mirror.RootNamespace(), f.prov, f.repo, "main", []int{1}, nil)
 	if !errors.As(err, &re) || re.Code != session.CodeProviderAuth {
 		t.Fatalf("auth: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestResolveRejectsChangeNotOnBaseBranch(t *testing.T) {
 		SetTargetBranch("main").SetState(provider.StateMerged).SetMergedAt(time.Now()).SetMergeCommitSHA(side).SetCommits([]provider.Commit{c}).Build()
 	f.prov.AddChange(cr)
 	var re *session.ReviewError
-	_, err := f.resolver.Resolve(context.Background(), f.prov, f.repo, "main", []int{9}, nil)
+	_, err := f.resolver.Resolve(context.Background(), mirror.RootNamespace(), f.prov, f.repo, "main", []int{9}, nil)
 	if !errors.As(err, &re) || re.Code != session.CodeNotOnBaseBranch || re.Change != 9 {
 		t.Fatalf("err = %v", err)
 	}
@@ -279,7 +279,7 @@ func TestResolveRejectsNotMergedBeforeFetchingMirror(t *testing.T) {
 
 	r := NewResolver(cache, testLog())
 	var re *session.ReviewError
-	_, err = r.Resolve(context.Background(), p, repo, "main", []int{1}, nil)
+	_, err = r.Resolve(context.Background(), mirror.RootNamespace(), p, repo, "main", []int{1}, nil)
 	if !errors.As(err, &re) || re.Code != session.CodeNotMerged {
 		t.Fatalf("err = %v, want NOT_MERGED", err)
 	}
@@ -363,7 +363,7 @@ func TestResolveBaseIsRootCommit(t *testing.T) {
 
 	resolver := NewResolver(cache, testLog())
 	var re *session.ReviewError
-	_, err = resolver.Resolve(context.Background(), p, repo, "main", []int{1}, nil)
+	_, err = resolver.Resolve(context.Background(), mirror.RootNamespace(), p, repo, "main", []int{1}, nil)
 	if !errors.As(err, &re) || re.Code != session.CodeBaseUndetermined {
 		t.Fatalf("err = %v, want BASE_UNDETERMINED", err)
 	}
@@ -497,7 +497,7 @@ func TestLandingWithFetchRetriesAndSucceeds(t *testing.T) {
 		t.Fatalf("precondition: candidate already present in the mirror (ok=%v err=%v)", ok, existErr)
 	}
 
-	landing, err := r.landingWithFetch(context.Background(), p, repo, objects, cr, []provider.Commit{commit})
+	landing, err := r.landingWithFetch(context.Background(), mirror.RootNamespace(), p, repo, objects, cr, []provider.Commit{commit})
 	if err != nil {
 		t.Fatalf("landingWithFetch: %v", err)
 	}
@@ -528,7 +528,7 @@ func TestLandingWithFetchAbsorbsFetchFailure(t *testing.T) {
 	}
 	objects := f.resolver.mirrors.Objects(mirrorPath, f.repo.FullName())
 
-	_, err = f.resolver.landingWithFetch(context.Background(), f.prov, f.repo, objects, cr, nil)
+	_, err = f.resolver.landingWithFetch(context.Background(), mirror.RootNamespace(), f.prov, f.repo, objects, cr, nil)
 	var re *session.ReviewError
 	if !errors.As(err, &re) || re.Code != session.CodeMissingCommits {
 		t.Fatalf("err = %v, want MISSING_COMMITS (FetchSHA's failure absorbed into the standard no-candidate outcome)", err)
@@ -566,7 +566,7 @@ func TestResolveGetChangeCommitsTooManyCommits(t *testing.T) {
 	f := newResolveFixture(t)
 	wrapped := &commitsErrProvider{GitProvider: f.prov, number: 1, err: provider.ErrTooManyCommits}
 	var re *session.ReviewError
-	_, err := f.resolver.Resolve(context.Background(), wrapped, f.repo, "main", []int{1}, nil)
+	_, err := f.resolver.Resolve(context.Background(), mirror.RootNamespace(), wrapped, f.repo, "main", []int{1}, nil)
 	if !errors.As(err, &re) || re.Code != session.CodeBaseUndetermined || re.Change != 1 {
 		t.Fatalf("err = %v, want BASE_UNDETERMINED for change 1", err)
 	}
@@ -582,7 +582,7 @@ func TestResolveGetChangeCommitsProviderError(t *testing.T) {
 
 	authWrapped := &commitsErrProvider{GitProvider: f.prov, number: 1, err: provider.ErrAuth}
 	var re *session.ReviewError
-	_, err := f.resolver.Resolve(context.Background(), authWrapped, f.repo, "main", []int{1}, nil)
+	_, err := f.resolver.Resolve(context.Background(), mirror.RootNamespace(), authWrapped, f.repo, "main", []int{1}, nil)
 	if !errors.As(err, &re) || re.Code != session.CodeProviderAuth {
 		t.Fatalf("err = %v, want PROVIDER_AUTH", err)
 	}
@@ -590,7 +590,7 @@ func TestResolveGetChangeCommitsProviderError(t *testing.T) {
 	unclassified := errors.New("commits endpoint exploded")
 	unclassifiedWrapped := &commitsErrProvider{GitProvider: f.prov, number: 1, err: unclassified}
 	re = nil
-	_, err = f.resolver.Resolve(context.Background(), unclassifiedWrapped, f.repo, "main", []int{1}, nil)
+	_, err = f.resolver.Resolve(context.Background(), mirror.RootNamespace(), unclassifiedWrapped, f.repo, "main", []int{1}, nil)
 	if !errors.As(err, &re) || re.Code != session.CodeProviderUnavailable {
 		t.Fatalf("err = %v, want PROVIDER_UNAVAILABLE for an unclassified error", err)
 	}

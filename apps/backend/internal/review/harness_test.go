@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jtumidanski/converge/internal/gitx"
+	"github.com/jtumidanski/converge/internal/identity"
 	"github.com/jtumidanski/converge/internal/mirror"
 	"github.com/jtumidanski/converge/internal/provider"
 	"github.com/jtumidanski/converge/internal/provider/fake"
@@ -97,7 +98,7 @@ func (h *harness) addChange(t *testing.T, number int, merge, squash, head string
 func (h *harness) build(t *testing.T, numbers ...int) session.Session {
 	t.Helper()
 	ctx := context.Background()
-	s, err := h.svc.Create(ctx, CreateInput{ProviderID: "fake", Repository: "atlas/server", BaseBranch: "main", Changes: numbers})
+	s, err := h.svc.Create(ctx, identity.Standalone(), CreateInput{ProviderID: "fake", Repository: "atlas/server", BaseBranch: "main", Changes: numbers})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

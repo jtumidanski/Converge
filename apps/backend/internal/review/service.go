@@ -88,9 +88,9 @@ func NewService(d Deps) *Service {
 	}
 }
 
-// Get returns a session by ID.
-func (s *Service) Get(id string) (session.Session, bool) {
-	return s.deps.Store.Get(id, identity.Standalone())
+// Get returns a session by ID, visible only to scope (session.Store.Get).
+func (s *Service) Get(id string, scope identity.Scope) (session.Session, bool) {
+	return s.deps.Store.Get(id, scope)
 }
 
 // Corrupted reports whether id was recorded, at the store's most recent
@@ -100,25 +100,26 @@ func (s *Service) Get(id string) (session.Session, bool) {
 // record could not be read" (500), per session.Store's documented contract.
 func (s *Service) Corrupted(id string) bool { return s.deps.Store.Corrupted(id) }
 
-// List returns active sessions, newest first.
-func (s *Service) List() []session.Session { return s.deps.Store.List(identity.Standalone()) }
+// List returns active sessions visible to scope, newest first.
+func (s *Service) List(scope identity.Scope) []session.Session { return s.deps.Store.List(scope) }
 
 // Finish cleans up and marks the session FINISHED. It is idempotent.
-func (s *Service) Finish(ctx context.Context, id string) error {
-	if err := s.deps.Store.Finish(ctx, id, identity.Standalone()); err != nil {
+func (s *Service) Finish(ctx context.Context, id string, scope identity.Scope) error {
+	if err := s.deps.Store.Finish(ctx, id, scope); err != nil {
 		return fmt.Errorf("review: finish %s: %w", id, err)
 	}
 	return nil
 }
 
-// Create validates the request and persists a CREATING session. It does not
-// start the build; callers run StartBuild (HTTP) or Build (CLI).
-func (s *Service) Create(ctx context.Context, in CreateInput) (session.Session, error) {
+// Create validates the request and persists a CREATING session owned by
+// scope. It does not start the build; callers run StartBuild (HTTP) or Build
+// (CLI).
+func (s *Service) Create(ctx context.Context, scope identity.Scope, in CreateInput) (session.Session, error) {
 	in, err := in.Validate(ctx, s.deps.Runner)
 	if err != nil {
 		return session.Session{}, err
 	}
-	registry, err := s.deps.Providers.Resolve(ctx, identity.Standalone())
+	registry, err := s.deps.Providers.Resolve(ctx, scope)
 	if err != nil {
 		return session.Session{}, fmt.Errorf("review: resolve providers: %w", err)
 	}
@@ -156,7 +157,11 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (session.Session, 
 	}
 	sess, err := session.NewBuilder().SetID(id).SetProviderID(p.ID()).SetRepository(repo.FullName()).
 		SetBaseBranch(in.BaseBranch).SetRequestedChanges(in.Changes).
-		SetCreatedAt(s.deps.Now()).SetTTL(s.deps.SessionTTL).Build()
+		SetCreatedAt(s.deps.Now()).SetTTL(s.deps.SessionTTL).
+		// Empty in standalone mode; the creating user's id in hosted mode
+		// (FR-6.1). This is the only place an owner is ever assigned.
+		SetOwner(scope.UserID()).
+		Build()
 	if err != nil {
 		return session.Session{}, fmt.Errorf("review: create: %w", err)
 	}
@@ -212,6 +217,10 @@ func (s *Service) StartBuild(ctx context.Context, id string) {
 // pipeline outcome with final.ID() == "" (its status is likewise the empty
 // string, never READY), and the condition is logged at Error level.
 func (s *Service) Build(ctx context.Context, id string) (final session.Session) {
+	// StartBuild deliberately outlives the HTTP request that triggered it, so
+	// no scope is available here to restrict the lookup: the session's own
+	// owner is the durable answer (see scopeOf), and Store.Get with the
+	// standalone scope sees every record regardless of owner.
 	sess, ok := s.deps.Store.Get(id, identity.Standalone())
 	if !ok {
 		s.deps.Log.Error("build requested for unknown session", slog.String("session", id))
@@ -404,6 +413,19 @@ func (s *Service) logDropped(id string, stored session.Session, reason string) {
 		slog.String("dropped", reason))
 }
 
+// scopeOf returns the scope a background build acts under. StartBuild
+// deliberately outlives the HTTP request that triggered it, so the request's
+// scope is gone by the time build runs; the owner persisted on the session is
+// the durable answer. An unowned session (standalone, or a record from before
+// hosted mode) yields the standalone scope, so its mirrors stay where they
+// have always been.
+func scopeOf(sess session.Session) identity.Scope {
+	if owner := sess.Owner(); owner != "" {
+		return identity.ForUser(owner)
+	}
+	return identity.Standalone()
+}
+
 // build is the pipeline proper. Every failure is returned as an error —
 // classified as a *session.ReviewError wherever the cause is known — and
 // never as a partially-populated session with a nil error.
@@ -413,9 +435,14 @@ func (s *Service) logDropped(id string, stored session.Session, reason string) {
 // as it actually is (base SHA, resolved changes, stage) instead of on the
 // pre-build snapshot. It is only ever touched from the build's own goroutine.
 func (s *Service) build(ctx context.Context, live *session.Session) (session.Session, error) {
-	registry, err := s.deps.Providers.Resolve(ctx, identity.Standalone())
+	scope := scopeOf(*live)
+	ns, err := mirror.NamespaceFor(scope)
 	if err != nil {
-		return *live, fmt.Errorf("review: resolve providers: %w", err)
+		return *live, fmt.Errorf("review: build %s: %w", live.ID(), err)
+	}
+	registry, err := s.deps.Providers.Resolve(ctx, scope)
+	if err != nil {
+		return *live, fmt.Errorf("review: build %s: resolve providers: %w", live.ID(), err)
 	}
 	p, ok := registry.Get(live.ProviderID())
 	if !ok {
@@ -436,7 +463,7 @@ func (s *Service) build(ctx context.Context, live *session.Session) (session.Ses
 	}
 
 	report := func(stage string) { *live = s.progress(live.WithStage(stage, s.deps.Now())) }
-	resolved, err := s.resolver.Resolve(ctx, p, repo, live.BaseBranch(), live.RequestedChanges(), report)
+	resolved, err := s.resolver.Resolve(ctx, ns, p, repo, live.BaseBranch(), live.RequestedChanges(), report)
 	if err != nil {
 		return *live, err
 	}
@@ -561,9 +588,9 @@ func (s *Service) head(ctx context.Context, repoDir, id string) (string, error) 
 	return head, nil
 }
 
-// Files returns the stored summary for a READY session.
-func (s *Service) Files(id string) ([]diff.FileSummary, error) {
-	sess, ok := s.deps.Store.Get(id, identity.Standalone())
+// Files returns the stored summary for a READY session visible to scope.
+func (s *Service) Files(id string, scope identity.Scope) ([]diff.FileSummary, error) {
+	sess, ok := s.deps.Store.Get(id, scope)
 	if !ok {
 		return nil, fmt.Errorf("review: session %s: %w", id, session.ErrNotFound)
 	}
@@ -573,9 +600,9 @@ func (s *Service) Files(id string) ([]diff.FileSummary, error) {
 	return sess.Files(), nil
 }
 
-// FileDiff renders one file's diff on demand.
-func (s *Service) FileDiff(ctx context.Context, id, path string) (diff.FileDiff, error) {
-	sess, ok := s.deps.Store.Get(id, identity.Standalone())
+// FileDiff renders one file's diff on demand for a session visible to scope.
+func (s *Service) FileDiff(ctx context.Context, id, path string, scope identity.Scope) (diff.FileDiff, error) {
+	sess, ok := s.deps.Store.Get(id, scope)
 	if !ok {
 		return diff.FileDiff{}, fmt.Errorf("review: session %s: %w", id, session.ErrNotFound)
 	}
@@ -594,9 +621,10 @@ func (s *Service) FileDiff(ctx context.Context, id, path string) (diff.FileDiff,
 	return diff.FileDiff{}, fmt.Errorf("%w: file %q is not part of this review", session.ErrNotFound, path)
 }
 
-// CombinedDiffPath returns the on-disk combined.diff for a READY session.
-func (s *Service) CombinedDiffPath(id string) (string, error) {
-	sess, ok := s.deps.Store.Get(id, identity.Standalone())
+// CombinedDiffPath returns the on-disk combined.diff for a READY session
+// visible to scope.
+func (s *Service) CombinedDiffPath(id string, scope identity.Scope) (string, error) {
+	sess, ok := s.deps.Store.Get(id, scope)
 	if !ok {
 		return "", fmt.Errorf("review: session %s: %w", id, session.ErrNotFound)
 	}
@@ -608,4 +636,37 @@ func (s *Service) CombinedDiffPath(id string) (string, error) {
 		return "", fmt.Errorf("%w: combined diff missing for session %s", session.ErrNotFound, id)
 	}
 	return p, nil
+}
+
+// PurgeUser implements auth.Purger. It removes every review session owned by
+// userID (workspaces included) and then that user's whole mirror namespace.
+//
+// Called by auth.Service.DeleteAccount *after* the database rows are gone, so
+// a failure here leaves orphaned bytes on disk rather than an account that has
+// lost its data but can still log in (design §6).
+func (s *Service) PurgeUser(ctx context.Context, userID string) error {
+	var errs []error
+	if err := s.deps.Store.Purge(ctx, userID); err != nil {
+		errs = append(errs, err)
+	}
+	ns, err := mirror.NamespaceFor(identity.ForUser(userID))
+	if err != nil {
+		errs = append(errs, err)
+	} else if err := s.deps.Mirrors.PurgeNamespace(ns); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// ProviderInUse implements auth.ProviderUsage: it reports whether the scope
+// has a review session in a non-terminal state referencing providerSlug
+// (FR-5.7). Store.List returns only active sessions, which is exactly the
+// question being asked, so a completed review does not block a delete.
+func (s *Service) ProviderInUse(scope identity.Scope, providerSlug string) bool {
+	for _, sess := range s.deps.Store.List(scope) {
+		if sess.ProviderID() == providerSlug {
+			return true
+		}
+	}
+	return false
 }

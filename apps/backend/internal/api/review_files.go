@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/jtumidanski/converge/internal/diff"
+	"github.com/jtumidanski/converge/internal/identity"
 	"github.com/jtumidanski/converge/internal/jsonapi"
 )
 
@@ -37,7 +38,9 @@ func (s *server) listReviewFiles(w http.ResponseWriter, r *http.Request) {
 		s.writeFileDiff(w, r, sess.ID(), path)
 		return
 	}
-	files, err := s.deps.Service.Files(sess.ID())
+	// Every handler in this file acts standalone until a later task derives
+	// the caller's scope from the authenticated request.
+	files, err := s.deps.Service.Files(sess.ID(), identity.Standalone())
 	if err != nil {
 		writeDomainError(w, s.deps.Log, err)
 		return
@@ -64,7 +67,7 @@ func (s *server) getReviewFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) writeFileDiff(w http.ResponseWriter, r *http.Request, id, path string) {
-	fd, err := s.deps.Service.FileDiff(r.Context(), id, path)
+	fd, err := s.deps.Service.FileDiff(r.Context(), id, path, identity.Standalone())
 	if err != nil {
 		writeDomainError(w, s.deps.Log, err)
 		return
@@ -83,7 +86,7 @@ func (s *server) getReviewDiff(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	path, err := s.deps.Service.CombinedDiffPath(sess.ID())
+	path, err := s.deps.Service.CombinedDiffPath(sess.ID(), identity.Standalone())
 	if err != nil {
 		writeDomainError(w, s.deps.Log, err)
 		return

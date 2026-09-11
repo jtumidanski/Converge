@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jtumidanski/converge/internal/gitx"
+	"github.com/jtumidanski/converge/internal/identity"
 	"github.com/jtumidanski/converge/internal/mirror"
 	"github.com/jtumidanski/converge/internal/session"
 )
@@ -66,7 +67,7 @@ func TestIntegrationMergeCommitWithMultipleCommits(t *testing.T) {
 	if got.ResolvedChanges()[0].Strategy() != session.StrategyMerge {
 		t.Errorf("strategy = %s", got.ResolvedChanges()[0].Strategy())
 	}
-	fd, err := h.svc.FileDiff(context.Background(), got.ID(), "a.txt")
+	fd, err := h.svc.FileDiff(context.Background(), got.ID(), "a.txt", identity.Standalone())
 	if err != nil || !strings.Contains(fd.Diff, "+a1") || !strings.Contains(fd.Diff, "+a2") {
 		t.Errorf("diff = %q err=%v", fd.Diff, err)
 	}
@@ -127,7 +128,7 @@ func TestIntegrationUnrelatedCommitsAreExcluded(t *testing.T) {
 	if !paths["a.txt"] || !paths["b.txt"] || len(paths) != 2 {
 		t.Fatalf("files = %v", paths)
 	}
-	p, err := h.svc.CombinedDiffPath(got.ID())
+	p, err := h.svc.CombinedDiffPath(got.ID(), identity.Standalone())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +163,7 @@ func TestIntegrationRepeatedEditsToOneFileCollapse(t *testing.T) {
 	if len(files) != 1 || files[0].Path != "f.txt" || files[0].Additions != 1 || files[0].Deletions != 1 {
 		t.Fatalf("expected one cumulative hunk: %+v", files)
 	}
-	fd, _ := h.svc.FileDiff(context.Background(), got.ID(), "f.txt")
+	fd, _ := h.svc.FileDiff(context.Background(), got.ID(), "f.txt", identity.Standalone())
 	if !strings.Contains(fd.Diff, "+v3") || strings.Contains(fd.Diff, "+v2") {
 		t.Errorf("diff should show only the net change:\n%s", fd.Diff)
 	}
@@ -230,7 +231,7 @@ func TestIntegrationDependencyOnUnselectedChangeConflicts(t *testing.T) {
 			t.Fatal("unselected change 1 must never be applied")
 		}
 	}
-	p, _ := h.svc.CombinedDiffPath(got.ID())
+	p, _ := h.svc.CombinedDiffPath(got.ID(), identity.Standalone())
 	if p != "" {
 		t.Error("no combined diff may exist for a conflicted session")
 	}
@@ -304,7 +305,7 @@ func TestIntegrationCleanupLeavesMirrorUsable(t *testing.T) {
 		t.Fatalf("status=%s err=%+v", got.Status(), got.Error())
 	}
 	ctx := context.Background()
-	if err := h.svc.Finish(ctx, got.ID()); err != nil {
+	if err := h.svc.Finish(ctx, got.ID(), identity.Standalone()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(h.workspaces.SessionDir(got.ID())); !os.IsNotExist(err) {
@@ -326,10 +327,10 @@ func TestIntegrationCleanupLeavesMirrorUsable(t *testing.T) {
 	if got2.Status() != session.StatusReady {
 		t.Fatalf("second build: %s %+v", got2.Status(), got2.Error())
 	}
-	if err := h.svc.Finish(ctx, got2.ID()); err != nil {
+	if err := h.svc.Finish(ctx, got2.ID(), identity.Standalone()); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.svc.Finish(ctx, got2.ID()); err != nil {
+	if err := h.svc.Finish(ctx, got2.ID(), identity.Standalone()); err != nil {
 		t.Fatalf("cleanup must be idempotent: %v", err)
 	}
 }
