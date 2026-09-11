@@ -340,19 +340,17 @@ func TestDeleteUserCascades(t *testing.T) {
 	if _, err := s.UserProviderByID(context.Background(), u.ID(), p.ID()); !errors.Is(err, auth.ErrNotFound) {
 		t.Fatalf("provider config should cascade-delete: %v", err)
 	}
-	// The attempt row is keyed by (scope, key), not user_id, so its removal
-	// is not a foreign-key cascade; the fact that it is gone confirms the
-	// account teardown clears it deliberately, not merely as a foreign-key
-	// side effect. Attempt-row deletion on account teardown is service-layer
-	// (Task 8+); here we only assert that the store itself did not leave the
-	// row orphaned by fiat — i.e. it was never coupled to the user row at the
-	// schema level, so this stays a documentation assertion, not a defect.
+	// The attempt row is keyed by (scope, key), not user_id, so no foreign key
+	// is declarable and ON DELETE CASCADE cannot reach it. DeleteUser
+	// therefore deletes it explicitly, in the same transaction: otherwise the
+	// lockout outlives the account and is inherited by whoever re-registers
+	// the username.
 	got, err := s.Attempt(context.Background(), auth.ScopeUser, auth.Fold("Alice"))
 	if err != nil {
 		t.Fatalf("Attempt: %v", err)
 	}
-	if got.Failures != 1 {
-		t.Fatalf("attempt row unexpectedly cleared by DeleteUser: %+v", got)
+	if got.Failures != 0 {
+		t.Fatalf("the deleted account's attempt row survived DeleteUser: %+v", got)
 	}
 }
 
@@ -546,19 +544,25 @@ func TestDeleteElapsedAttempts(t *testing.T) {
 	s := newStore(t)
 	now := time.Unix(10_000, 0).UTC()
 
-	elapsed := auth.Attempt{
+	// Only the IP scope is reapable: its counter is windowed (FR-7.3). A
+	// user-scope counter resets only on a successful login (FR-7.2), so it
+	// survives the sweep however elapsed it looks.
+	elapsedIP := auth.Attempt{
+		Scope: auth.ScopeIP, Key: "elapsed", Failures: 1,
+		WindowStart: now.Add(-time.Hour), LockedUntil: now.Add(-time.Minute),
+	}
+	liveIP := auth.Attempt{
+		Scope: auth.ScopeIP, Key: "live", Failures: 1,
+		WindowStart: now.Add(-time.Minute), LockedUntil: now.Add(time.Hour),
+	}
+	elapsedUser := auth.Attempt{
 		Scope: auth.ScopeUser, Key: "elapsed", Failures: 1,
 		WindowStart: now.Add(-time.Hour), LockedUntil: now.Add(-time.Minute),
 	}
-	live := auth.Attempt{
-		Scope: auth.ScopeUser, Key: "live", Failures: 1,
-		WindowStart: now.Add(-time.Minute), LockedUntil: now.Add(time.Hour),
-	}
-	if err := s.SaveAttempt(context.Background(), elapsed); err != nil {
-		t.Fatalf("SaveAttempt(elapsed): %v", err)
-	}
-	if err := s.SaveAttempt(context.Background(), live); err != nil {
-		t.Fatalf("SaveAttempt(live): %v", err)
+	for _, a := range []auth.Attempt{elapsedIP, liveIP, elapsedUser} {
+		if err := s.SaveAttempt(context.Background(), a); err != nil {
+			t.Fatalf("SaveAttempt(%s/%s): %v", a.Scope, a.Key, err)
+		}
 	}
 
 	n, err := s.DeleteElapsedAttempts(context.Background(), now)
@@ -568,11 +572,14 @@ func TestDeleteElapsedAttempts(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("DeleteElapsedAttempts() = %d, want 1", n)
 	}
-	if got, err := s.Attempt(context.Background(), auth.ScopeUser, "elapsed"); err != nil || got.Failures != 0 {
-		t.Fatalf("elapsed attempt should be gone: %+v, %v", got, err)
+	if got, err := s.Attempt(context.Background(), auth.ScopeIP, "elapsed"); err != nil || got.Failures != 0 {
+		t.Fatalf("elapsed IP attempt should be gone: %+v, %v", got, err)
 	}
-	if got, err := s.Attempt(context.Background(), auth.ScopeUser, "live"); err != nil || got.Failures != 1 {
-		t.Fatalf("live attempt should survive: %+v, %v", got, err)
+	if got, err := s.Attempt(context.Background(), auth.ScopeIP, "live"); err != nil || got.Failures != 1 {
+		t.Fatalf("live IP attempt should survive: %+v, %v", got, err)
+	}
+	if got, err := s.Attempt(context.Background(), auth.ScopeUser, "elapsed"); err != nil || got.Failures != 1 {
+		t.Fatalf("a user-scope attempt must never be swept (FR-7.2): %+v, %v", got, err)
 	}
 }
 

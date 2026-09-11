@@ -20,16 +20,22 @@ import (
 // shared ExecRunner's Options.Secrets, which is fixed at construction.
 const hostedToken = "ghp-hostedusertoken0123456789"
 
-// TestAuthorizeGitRedactsHostedTokenFromGitStderr is the end-to-end guard for
-// the hosted leak: the runner is built the way app.New builds it for a hosted
-// deployment (Options.Secrets empty, because no provider token is configured
-// through the environment), and the only declaration of the secret is the one
-// AuthorizeGit makes on the Spec it authorises.
+// TestAuthorizeGitRedactsHostedTokenFromGitStderr is the defence-in-depth
+// guard for per-user tokens in git's own diagnostics. There is no known
+// production path by which a *raw* hosted token reaches git stderr — it
+// reaches git only through GIT_CONFIG_*, where it exists as base64 inside an
+// Authorization: Basic blob, never as the token string itself — so this is not
+// a reproduction of an observed leak. What it pins is that a hosted token is
+// covered by redaction at all: the runner is built the way app.New builds it
+// for a hosted deployment (Options.Secrets empty, because no provider token is
+// configured through the environment), so the only declaration of the secret
+// is the one AuthorizeGit makes on the Spec it authorises. If that declaration
+// were dropped, nothing else would cover the value.
 //
-// The token is placed in argv here purely to force git to echo it on stderr.
-// Production never puts a token in argv (it reaches git only through
-// GIT_CONFIG_*); this test simulates the general case of a token value
-// surfacing in git's own diagnostics, which is what the redaction exists for.
+// The token is placed in argv by this test's own Spec.Args purely to force git
+// to echo it on stderr. Production never puts a token in argv; this
+// manufactures the general case of a token value surfacing in git's
+// diagnostics, which is what the redaction exists for.
 func TestAuthorizeGitRedactsHostedTokenFromGitStderr(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")

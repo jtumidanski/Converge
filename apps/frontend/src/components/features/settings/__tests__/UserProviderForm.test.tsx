@@ -216,3 +216,28 @@ describe("UserProviderForm (edit)", () => {
     await waitFor(() => expect(body?.data.attributes.token).toBe("ghp_rotated"));
   });
 });
+
+// The kind field is the shipped Radix Select rather than a native <select>, so
+// it is a button with role "combobox" whose label reflects the form's current
+// value. These assert the control is wired to form state in both variants: the
+// create default, and the value an existing provider arrives with.
+describe("UserProviderForm kind field", () => {
+  it("renders the shipped Select showing the create default", () => {
+    renderWithProviders(
+      <UserProviderForm mode="create" onSubmitted={vi.fn()} onCancel={vi.fn()} />,
+    );
+    expect(screen.getByRole("combobox", { name: "Kind" })).toHaveTextContent("GitHub");
+  });
+
+  it("renders the edited provider's kind", () => {
+    renderWithProviders(
+      <UserProviderForm
+        mode="edit"
+        provider={providerFixture({ kind: "gitlab", baseUrl: "https://gitlab.example.com" })}
+        onSubmitted={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("combobox", { name: "Kind" })).toHaveTextContent("GitLab");
+  });
+});

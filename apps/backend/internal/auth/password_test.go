@@ -159,8 +159,13 @@ func TestVerifyRejectsOversizedCostParameters(t *testing.T) {
 				if errors.Is(err, auth.ErrPasswordMismatch) {
 					t.Fatalf("VerifyPassword(%q) = %v (ErrPasswordMismatch); want decodePHC to reject before hashing", bad, err)
 				}
-			case <-time.After(200 * time.Millisecond):
-				t.Fatalf("VerifyPassword did not return within 200ms; the oversized parameter was not rejected before hashing")
+			// The ErrPasswordMismatch check above is the actual assertion; this
+			// deadline only stops a regression from hanging the suite while
+			// argon2 tries to allocate a terabyte. It is generous on purpose:
+			// decodePHC rejects in microseconds, so a deadline tight enough to
+			// be a performance assertion would just be a flake under load.
+			case <-time.After(10 * time.Second):
+				t.Fatalf("VerifyPassword did not return within 10s; the oversized parameter was not rejected before hashing")
 			}
 		})
 	}

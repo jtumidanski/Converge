@@ -10,7 +10,11 @@ import (
 	"github.com/jtumidanski/converge/internal/config"
 )
 
-// Store is the only file in this repository that contains SQL.
+// Store is the only production file in this repository that contains SQL
+// queries against the application tables. internal/db also contains SQL, but
+// only the schema itself (migrations/*.sql) and the migration runner's
+// bookkeeping against schema_migrations; it never reads or writes users,
+// login_sessions, user_providers, or login_attempts.
 //
 // Every statement is parameterised: no value is ever concatenated into a
 // query string. Times are persisted as unix seconds (INTEGER), matching the
@@ -104,11 +108,34 @@ func (s *Store) SetPasswordHash(ctx context.Context, userID, hash string, now ti
 	return nil
 }
 
-// DeleteUser removes an account. Login sessions, provider configs, and the
-// user's own attempt row cascade via ON DELETE CASCADE / explicit key match
-// (FR-2.7).
+// DeleteUser removes an account (FR-2.7).
+//
+// Login sessions and provider configs cascade: both reference users(id) with
+// ON DELETE CASCADE, and the pool enables foreign_keys. The username's
+// throttle counter does not and cannot — login_attempts is keyed by folded
+// username, not by user id, so no foreign key is declarable — so it is
+// deleted explicitly here, in the same transaction that removes the account.
+// Without that, a lockout outlives the account and is inherited by whoever
+// re-registers the username.
 func (s *Store) DeleteUser(ctx context.Context, id string) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("auth: begin delete user: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Read the fold before the delete: afterwards there is nothing left to
+	// derive the throttle key from.
+	var fold string
+	err = tx.QueryRowContext(ctx, `SELECT username_fold FROM users WHERE id = ?`, id).Scan(&fold)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrNotFound
+	case err != nil:
+		return fmt.Errorf("auth: read username fold for delete: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("auth: delete user: %w", err)
 	}
@@ -118,6 +145,15 @@ func (s *Store) DeleteUser(ctx context.Context, id string) error {
 	}
 	if n == 0 {
 		return ErrNotFound
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM login_attempts WHERE scope = ? AND key = ?`, ScopeUser, fold); err != nil {
+		return fmt.Errorf("auth: delete user throttle counter: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("auth: commit delete user: %w", err)
 	}
 	return nil
 }
@@ -424,12 +460,23 @@ func (s *Store) ClearAttempt(ctx context.Context, scope, key string) error {
 	return nil
 }
 
-// DeleteElapsedAttempts reaps counters that are neither locked nor within
-// their window, returning how many were removed.
+// DeleteElapsedAttempts reaps IP-scope counters that are neither locked nor
+// within their window, returning how many were removed.
+//
+// The scope predicate is load-bearing, not an optimisation. Only the IP
+// counter is windowed — 20 failures "within 15 minutes" (FR-7.3) — so an IP
+// row outside its window and outside any lockout carries no information.
+// The username counter is consecutive-failure based and resets *only* on a
+// successful login (FR-7.2): it has no window at all. Reaping user-scope rows
+// here let an attacker pacing guesses further apart than the sweep interval
+// never reach the 5-failure lockout, and reset the doubling exponent every
+// time a lockout elapsed. User-scope rows are removed by ClearAttempt on a
+// successful login and by DeleteUser when the account goes away; those are
+// their only two exits.
 func (s *Store) DeleteElapsedAttempts(ctx context.Context, before time.Time) (int64, error) {
 	result, err := s.db.ExecContext(ctx,
-		`DELETE FROM login_attempts WHERE locked_until <= ? AND window_start <= ?`,
-		unix(before), unix(before))
+		`DELETE FROM login_attempts WHERE scope = ? AND locked_until <= ? AND window_start <= ?`,
+		ScopeIP, unix(before), unix(before))
 	if err != nil {
 		return 0, fmt.Errorf("auth: delete elapsed attempts: %w", err)
 	}

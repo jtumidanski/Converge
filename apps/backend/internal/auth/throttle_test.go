@@ -243,17 +243,22 @@ func TestLockoutSurvivesReopeningTheDatabase(t *testing.T) {
 	lockedErr(t, err)
 }
 
+// TestSweepRemovesElapsedRows exercises the sweeper against the IP counter,
+// which is the only scope it may reap. The IP counter is windowed (FR-7.3), so
+// once its window has closed and its lockout elapsed the row carries no
+// information. The username counter is deliberately out of the sweeper's reach
+// — see TestSweepKeepsPacedUsernameFailuresAccumulating.
 func TestSweepRemovesElapsedRows(t *testing.T) {
 	ctx := context.Background()
 	c := newClock()
 	th := auth.NewThrottle(newStore(t), c.now)
 
-	for i := 0; i < 5; i++ {
-		if err := th.Fail(ctx, "alice", ""); err != nil {
+	for i := 0; i < 20; i++ {
+		if err := th.Fail(ctx, "", "192.0.2.44"); err != nil {
 			t.Fatalf("Fail #%d: %v", i+1, err)
 		}
 	}
-	if err := th.Check(ctx, "alice", ""); err == nil {
+	if err := th.Check(ctx, "", "192.0.2.44"); err == nil {
 		t.Fatal("expected lockout before sweeping, got nil")
 	}
 
@@ -266,7 +271,7 @@ func TestSweepRemovesElapsedRows(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("Sweep removed %d rows, want 1", n)
 	}
-	if err := th.Check(ctx, "alice", ""); err != nil {
+	if err := th.Check(ctx, "", "192.0.2.44"); err != nil {
 		t.Fatalf("Check after Sweep should be nil, got %v", err)
 	}
 }

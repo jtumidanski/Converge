@@ -180,6 +180,18 @@ func (s *Service) Login(ctx context.Context, c Credentials, clientIP string) (Us
 		encoded = user.PasswordHash()
 	}
 	verifyErr := s.verify(encoded, c.Password)
+	// "We could not check" is not "they did not match". Only ErrNotFound means
+	// the username is unknown; any other lookup error is a store fault, and
+	// answering a database outage with 401 INVALID_CREDENTIALS would tell the
+	// user their password is wrong when it may well be right. It propagates
+	// unclassified, which the API layer answers 500 with a generic message,
+	// and it is not counted against the throttle — an outage must not spend an
+	// innocent user's failure budget. The dummy verification above has already
+	// run, so this path's timing profile is unchanged.
+	if lookupErr != nil && !errors.Is(lookupErr, ErrNotFound) {
+		s.deps.Log.Error("login could not read the user store", slog.String("error", lookupErr.Error()))
+		return User{}, "", lookupErr
+	}
 	if lookupErr != nil || verifyErr != nil {
 		if failErr := s.deps.Throttle.Fail(ctx, fold, clientIP); failErr != nil {
 			s.deps.Log.Warn("record login failure", slog.String("error", failErr.Error()))

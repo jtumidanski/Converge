@@ -103,8 +103,15 @@ they are no longer wanted.
 `converge-cli` never opens the hosted database and never builds any
 authentication machinery of its own; it always constructs its scope as
 `identity.Standalone()` and resolves providers through the same static,
-server-wide `PROVIDERS__*` registry standalone mode uses. It shares
-`internal/app`'s wiring code with the server binary, so `CONVERGE_MODE=hosted`
-present in the CLI's own environment would still cause it to attempt to open
-the database — operators should not set `CONVERGE_MODE=hosted` in a shell
-where `converge-cli` runs.
+server-wide `PROVIDERS__*` registry standalone mode uses.
+
+That holds regardless of the environment it inherits. It shares
+`internal/app`'s wiring code with the server binary, but it pins its own mode
+before handing that wiring an environment: it appends
+`CONVERGE_MODE=standalone` to `os.Environ()`, and `config.Load` builds its
+variables by assigning into a map as it walks the slice in order, so the last
+occurrence of a key wins. `CONVERGE_MODE=hosted` inherited from the calling
+shell — or from the hosted container, if the CLI is exec'd inside it — is
+therefore overridden, not honoured. There is nothing an operator needs to
+unset. A test asserts no database file is created when the CLI runs with
+`CONVERGE_MODE=hosted` in its environment.

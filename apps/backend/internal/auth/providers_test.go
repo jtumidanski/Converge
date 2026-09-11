@@ -547,7 +547,8 @@ func TestSweepRemovesExpiredSessionsAndElapsedLockouts(t *testing.T) {
 		t.Fatalf("Register expired: %v", err)
 	}
 
-	// An elapsed lockout: fail a login enough times to engage it.
+	// A stale IP counter: failed logins from one address leave one, and it is
+	// the scope the sweeper may reap once its window has closed.
 	for i := 0; i < 5; i++ {
 		_, _, loginErr := f.svc.Login(ctx, auth.Credentials{Username: "walt", Password: "wrongpassword"}, "10.1.0.21")
 		if loginErr == nil {
@@ -565,12 +566,21 @@ func TestSweepRemovesExpiredSessionsAndElapsedLockouts(t *testing.T) {
 		t.Fatalf("expected the expired session to be gone")
 	}
 
-	attempt, err := f.store.Attempt(ctx, auth.ScopeUser, auth.Fold("walt"))
+	ipAttempt, err := f.store.Attempt(ctx, auth.ScopeIP, "10.1.0.21")
 	if err != nil {
-		t.Fatalf("Attempt: %v", err)
+		t.Fatalf("Attempt(ip): %v", err)
 	}
-	if attempt.Failures != 0 {
-		t.Fatalf("expected the elapsed lockout counter to be swept, got failures=%d", attempt.Failures)
+	if ipAttempt.Failures != 0 {
+		t.Fatalf("expected the stale IP counter to be swept, got failures=%d", ipAttempt.Failures)
+	}
+	// The username counter must survive: FR-7.2 resets it only on a successful
+	// login, and sweeping it would let paced guesses escape the lockout.
+	userAttempt, err := f.store.Attempt(ctx, auth.ScopeUser, auth.Fold("walt"))
+	if err != nil {
+		t.Fatalf("Attempt(user): %v", err)
+	}
+	if userAttempt.Failures != 5 {
+		t.Fatalf("the username counter should survive the sweep, got failures=%d", userAttempt.Failures)
 	}
 
 	// The live session must be unaffected: re-authenticate the original

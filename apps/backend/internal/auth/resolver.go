@@ -13,7 +13,11 @@ import (
 )
 
 // providerResolverTTL bounds how long a user's decrypted tokens sit in
-// memory. Tokens are decrypted at registry-build time and live inside
+// memory. Two things enforce that bound together: Resolve refuses to serve an
+// entry older than the TTL, and EvictElapsed — called from the background
+// sweeper — deletes it from the map, so an idle user's tokens do not stay
+// resident for the lifetime of the process. Tokens are decrypted at
+// registry-build time and live inside
 // config.Secret values held by the github/gitlab clients — the same place
 // standalone mode keeps them. Decrypting per call instead buys little (the
 // plaintext still reaches GIT_CONFIG_VALUE_0 and an HTTP header) and costs a
@@ -91,6 +95,27 @@ func (r *ProviderResolver) Invalidate(userID string) {
 	r.mu.Lock()
 	delete(r.cache, userID)
 	r.mu.Unlock()
+}
+
+// EvictElapsed deletes every cache entry built more than providerResolverTTL
+// ago. This is what makes the TTL a bound on secret residency rather than only
+// a freshness check on the read path: a user who logs in once and goes away
+// has their decrypted tokens dropped on the next sweep instead of held until
+// the process exits.
+//
+// Dropping an entry is never incorrect, only wasteful — Resolve rebuilds from
+// the database on a miss — so there is no coordination with in-flight
+// callers: a caller that already holds the *provider.Registry keeps using it,
+// which is the same lifetime an entry returned just before its TTL elapsed
+// already had.
+func (r *ProviderResolver) EvictElapsed(now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for userID, entry := range r.cache {
+		if now.Sub(entry.builtAt) >= providerResolverTTL {
+			delete(r.cache, userID)
+		}
+	}
 }
 
 // build decrypts each configuration and registers a client under its slug, so

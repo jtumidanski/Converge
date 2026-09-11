@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"sort"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -150,11 +150,26 @@ func assertCode(t *testing.T, err error, code auth.Code) *auth.Error {
 	return ae
 }
 
-func median(ds []time.Duration) time.Duration {
-	sorted := append([]time.Duration(nil), ds...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	return sorted[len(sorted)/2]
+// bytesAllocatedDuring reports how many bytes fn caused to be allocated.
+//
+// This is the timing-oracle probe, and it replaces a wall-clock measurement:
+// an Argon2id verify at m=65536 KiB must allocate its 64 MiB block array, so
+// the allocation counter shows whether the hash ran, and unlike elapsed time
+// it does not move when the machine is busy. TotalAlloc is process-wide, so
+// callers must not be parallel tests.
+func bytesAllocatedDuring(fn func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	fn()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
 }
+
+// argonVerifyFloor is a conservative lower bound on the allocation one
+// Argon2id verify at the production parameters must perform: the block array
+// alone is argonMemory (64 MiB). Anything at or above this floor cannot have
+// skipped the hash.
+const argonVerifyFloor = 48 << 20
 
 func TestRegisterThenLoginRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -221,8 +236,21 @@ func TestRegisterValidatesInput(t *testing.T) {
 	}
 }
 
+// TestLoginIsIndistinguishableBetweenUnknownUserAndWrongPassword is the
+// timing-oracle guard for FR-2.5: an unknown username and a wrong password
+// must be indistinguishable to the client, in the response *and* in the cost
+// of producing it.
+//
+// It deliberately does not call t.Parallel(), and it deliberately measures
+// allocation rather than elapsed time. The earlier form asserted a 2x ratio of
+// wall-clock medians while running in parallel with other tests whose 64 MiB
+// Argon2id hashes queue behind the same 4-slot semaphore; that makes the
+// measurement a function of machine load, which is how it flaked under full
+// suite load and never under a focused run. Allocation is a property of the
+// work done, not of the scheduler: one Argon2id verify cannot happen without
+// its 64 MiB block array. Within a package a sequential test has the process
+// to itself, so the process-wide counter is attributable to this test.
 func TestLoginIsIndistinguishableBetweenUnknownUserAndWrongPassword(t *testing.T) {
-	t.Parallel()
 	f := newService(t)
 	ctx := context.Background()
 
@@ -230,29 +258,30 @@ func TestLoginIsIndistinguishableBetweenUnknownUserAndWrongPassword(t *testing.T
 		t.Fatalf("Register: %v", err)
 	}
 
-	const rounds = 3
-	unknownDur := make([]time.Duration, 0, rounds)
-	wrongDur := make([]time.Duration, 0, rounds)
+	var unknownErr, wrongErr error
+	unknownAlloc := bytesAllocatedDuring(func() {
+		_, _, unknownErr = f.svc.Login(ctx, auth.Credentials{Username: "nosuchuser", Password: "whatever1"}, "10.0.1.1")
+	})
+	wrongAlloc := bytesAllocatedDuring(func() {
+		_, _, wrongErr = f.svc.Login(ctx, auth.Credentials{Username: "carol", Password: "wrongpass1"}, "10.0.1.2")
+	})
 
-	for i := 0; i < rounds; i++ {
-		start := time.Now()
-		_, _, unknownErr := f.svc.Login(ctx, auth.Credentials{Username: fmt.Sprintf("nosuchuser%d", i), Password: "whatever1"}, "10.0.1.1")
-		unknownDur = append(unknownDur, time.Since(start))
-
-		start = time.Now()
-		_, _, wrongErr := f.svc.Login(ctx, auth.Credentials{Username: "carol", Password: "wrongpass1"}, "10.0.1.2")
-		wrongDur = append(wrongDur, time.Since(start))
-
-		unknownAE := assertCode(t, unknownErr, auth.CodeInvalidCredentials)
-		wrongAE := assertCode(t, wrongErr, auth.CodeInvalidCredentials)
-		if unknownAE.Message != wrongAE.Message {
-			t.Fatalf("messages differ: %q vs %q", unknownAE.Message, wrongAE.Message)
-		}
+	unknownAE := assertCode(t, unknownErr, auth.CodeInvalidCredentials)
+	wrongAE := assertCode(t, wrongErr, auth.CodeInvalidCredentials)
+	if unknownAE.Message != wrongAE.Message {
+		t.Fatalf("messages differ: %q vs %q", unknownAE.Message, wrongAE.Message)
 	}
 
-	um, wm := median(unknownDur), median(wrongDur)
-	if um < wm/2 || wm < um/2 {
-		t.Fatalf("login timing differs too much to be computing the same hash: unknown median=%v wrong median=%v", um, wm)
+	// The unknown-username path is the one that can cheat, by returning before
+	// hashing anything. If it did, its allocation would fall far below one
+	// Argon2id block array.
+	if unknownAlloc < argonVerifyFloor {
+		t.Fatalf("the unknown-username login allocated %d bytes, below the %d-byte floor for one Argon2id verify: it did not hash against the dummy, so response time discloses whether the username exists",
+			unknownAlloc, argonVerifyFloor)
+	}
+	if wrongAlloc < argonVerifyFloor {
+		t.Fatalf("the wrong-password login allocated %d bytes, below the %d-byte floor for one Argon2id verify",
+			wrongAlloc, argonVerifyFloor)
 	}
 }
 
