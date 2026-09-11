@@ -1082,16 +1082,20 @@ func TestCreateInStandaloneLeavesOwnerEmpty(t *testing.T) {
 
 // scopedRegistryResolver is a fake provider.Resolver that hands back a
 // different registry per user id, the seam TestCreateResolvesTheCallersRegistry
-// exercises.
+// exercises. An unrecognised user id is a hard error rather than an empty
+// registry, so a Create that resolves the wrong scope (standalone, or
+// another user) fails loudly instead of quietly landing on the same
+// CodeInvalidProvider result a correct resolve would also produce.
 type scopedRegistryResolver struct {
 	registries map[string]*provider.Registry
 }
 
 func (r scopedRegistryResolver) Resolve(_ context.Context, scope identity.Scope) (*provider.Registry, error) {
-	if reg, ok := r.registries[scope.UserID()]; ok {
-		return reg, nil
+	reg, ok := r.registries[scope.UserID()]
+	if !ok {
+		return nil, fmt.Errorf("scopedRegistryResolver: no registry configured for user %q", scope.UserID())
 	}
-	return provider.NewRegistry(), nil
+	return reg, nil
 }
 
 // TestCreateResolvesTheCallersRegistry is the seam that makes another user's
