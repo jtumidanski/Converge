@@ -66,7 +66,11 @@ func (c *Cache) Ensure(ctx context.Context, p provider.GitProvider, repo provide
 	defer unlock()
 	var spec gitx.Spec
 	if exists(filepath.Join(path, "HEAD")) {
-		spec = gitx.Spec{Dir: path, Args: []string{"remote", "update", "--prune"}, Category: gitx.CategoryFetch, Repo: repo.FullName()}
+		// The refspec is spelled out rather than left to `remote update` so
+		// the review namespace can be excluded: pruning it would delete the
+		// branches live session worktrees have checked out (see
+		// gitx.ExcludeReviewRefspec).
+		spec = gitx.Spec{Dir: path, Args: []string{"fetch", "--prune", "origin", gitx.MirrorRefspec, gitx.ExcludeReviewRefspec}, Category: gitx.CategoryFetch, Repo: repo.FullName()}
 	} else {
 		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 			return "", fmt.Errorf("mirror: create parent: %w", err)
