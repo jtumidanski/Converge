@@ -105,4 +105,28 @@ describe("ChangeTable", () => {
     renderTable({ rows: [] });
     expect(screen.getByText("No merged PRs/MRs")).toBeInTheDocument();
   });
+
+  it("renders the row's author name and source branch text", () => {
+    // Distinct from every other fixture string in this file (titles, branch
+    // patterns, numbers) so the assertion can only pass if ChangeRow renders
+    // the real author/sourceBranch values, not some other field.
+    const detailed: Change = {
+      type: "changes",
+      id: "42",
+      attributes: {
+        number: 42,
+        title: "Row detail regression check",
+        author: "morgan-reviewer",
+        sourceBranch: "feature/checkout-redesign",
+        targetBranch: "main",
+        mergedAt: "2026-01-01T00:00:00Z",
+        createdAt: "2026-01-01T00:00:00Z",
+        landingSha: null,
+        webUrl: "https://example.test/mr/42",
+      },
+    };
+    renderTable({ rows: buildRows([detailed], null, 0, () => false) });
+    expect(screen.getByText("morgan-reviewer")).toBeInTheDocument();
+    expect(screen.getByText("feature/checkout-redesign")).toBeInTheDocument();
+  });
 });

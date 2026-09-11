@@ -307,6 +307,53 @@ describe("SelectChangesPage", () => {
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
+  it("keeps the selection and the build affordance intact across a search", async () => {
+    const searchParams: string[] = [];
+    seed();
+    server.use(
+      http.get("/api/providers/gl/repositories/:repo/changes", ({ request }) => {
+        const url = new URL(request.url);
+        searchParams.push(url.searchParams.get("search") ?? "");
+        return HttpResponse.json(
+          listDoc(
+            [change(1, "ATLAS-1 first", "feat/a"), change(2, "ATLAS-1 second", "feat/b", "zoe")],
+            { number: 1, size: 30, hasNext: false },
+          ),
+        );
+      }),
+    );
+    renderPage();
+    await screen.findByText("ATLAS-1 first");
+    await userEvent.click(screen.getByText("ATLAS-1 first"));
+    expect(screen.getByText("1 selected · applied oldest → newest")).toBeInTheDocument();
+
+    await userEvent.type(screen.getByRole("textbox", { name: /search prs\/mrs/i }), "atlas");
+    await waitFor(() => expect(searchParams).toContain("atlas"));
+
+    expect(screen.getByText("1 selected · applied oldest → newest")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /build review/i })).toBeEnabled();
+  });
+
+  it("shows loading instead of the empty state before the first changes request settles", async () => {
+    let resolveChanges: (() => void) | undefined;
+    seed();
+    server.use(
+      http.get("/api/providers/gl/repositories/:repo/changes", async () => {
+        await new Promise<void>((resolve) => {
+          resolveChanges = resolve;
+        });
+        return HttpResponse.json(
+          listDoc([change(1, "ATLAS-1 first", "feat/a")], { number: 1, size: 30, hasNext: false }),
+        );
+      }),
+    );
+    renderPage();
+    await waitFor(() => expect(resolveChanges).toBeDefined());
+    expect(screen.queryByText("No merged PRs/MRs")).not.toBeInTheDocument();
+    resolveChanges?.();
+    expect(await screen.findByText("ATLAS-1 first")).toBeInTheDocument();
+  });
+
   it("wires Pagination to page state and gates Next on hasNext", async () => {
     const pagesRequested: string[] = [];
     server.use(
