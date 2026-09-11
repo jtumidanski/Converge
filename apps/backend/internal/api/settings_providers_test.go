@@ -531,8 +531,24 @@ func TestPatchWithAnExplicitEmptyTokenKeepsTheStoredOne(t *testing.T) {
 	}
 }
 
+// TestSettingsRoutesAre404InStandalone proves NewRouter's real registration:
+// with Mode left at ModeStandalone, every /api/settings/providers route is
+// unregistered, so the "/api/" catch-all answers 404 NOT_FOUND for it.
 func TestSettingsRoutesAre404InStandalone(t *testing.T) {
-	t.Skip("route registration lands in Task 19")
+	h := NewRouter(Deps{Mode: config.ModeStandalone, Log: testLogger(), Providers: provider.NewStaticResolver(provider.NewRegistry())})
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/settings/providers"},
+		{http.MethodPost, "/api/settings/providers"},
+		{http.MethodPatch, "/api/settings/providers/abc"},
+		{http.MethodDelete, "/api/settings/providers/abc"},
+	} {
+		w := doAuth(t, h, tc.method, tc.path, "")
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s %s: status = %d, want 404; body=%s", tc.method, tc.path, w.Code, w.Body.String())
+			continue
+		}
+		assertErrorCode(t, w, "NOT_FOUND")
+	}
 }
 
 func TestListIsSortedBySlug(t *testing.T) {

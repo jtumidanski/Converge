@@ -87,9 +87,30 @@ func NewRouter(d Deps) http.Handler {
 			d.Store.RunSweeper(buildCtx, d.CleanupInterval)
 		}()
 	}
+	if d.AuthSweep != nil && d.CleanupInterval > 0 {
+		d.Background.Add(1)
+		go func() {
+			defer d.Background.Done()
+			ticker := time.NewTicker(d.CleanupInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-buildCtx.Done():
+					return
+				case <-ticker.C:
+					if err := d.AuthSweep(buildCtx); err != nil {
+						d.Log.Warn("auth sweep failed", slog.String("error", err.Error()))
+					}
+				}
+			}
+		}()
+	}
 	s := &server{deps: d, buildCtx: buildCtx}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	// Registered in both modes and always unauthenticated: this is the SPA's
+	// first call.
+	mux.HandleFunc("GET /api/auth/mode", s.authMode)
 	mux.HandleFunc("GET /api/providers", s.listProviders)
 	mux.HandleFunc("GET /api/providers/{provider}/repositories", s.listRepositories)
 	// {repo} (a single wildcard segment, not {repo...}) is correct here: Go's
@@ -106,6 +127,22 @@ func NewRouter(d Deps) http.Handler {
 	mux.HandleFunc("GET /api/reviews/{id}/files", s.listReviewFiles)
 	mux.HandleFunc("GET /api/reviews/{id}/files/{path...}", s.getReviewFile)
 	mux.HandleFunc("GET /api/reviews/{id}/diff", s.getReviewDiff)
+	if d.Mode == config.ModeHosted {
+		// Registered only in hosted mode. In standalone the existing "/api/"
+		// catch-all below produces the 404s FR-4.3 requires, so no handler
+		// contains a "return 404 in standalone" branch — the absence of a
+		// route *is* the behaviour.
+		mux.HandleFunc("POST /api/auth/register", s.register)
+		mux.HandleFunc("POST /api/auth/login", s.login)
+		mux.HandleFunc("POST /api/auth/logout", s.logout)
+		mux.HandleFunc("GET /api/auth/me", s.currentUser)
+		mux.HandleFunc("DELETE /api/auth/me", s.deleteAccount)
+		mux.HandleFunc("POST /api/auth/password", s.changePassword)
+		mux.HandleFunc("GET /api/settings/providers", s.listUserProviders)
+		mux.HandleFunc("POST /api/settings/providers", s.createUserProvider)
+		mux.HandleFunc("PATCH /api/settings/providers/{id}", s.updateUserProvider)
+		mux.HandleFunc("DELETE /api/settings/providers/{id}", s.deleteUserProvider)
+	}
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
 		_ = jsonapi.WriteError(w, http.StatusNotFound, "NOT_FOUND", jsonapi.StatusTitle(http.StatusNotFound), "No such endpoint.")
 	})
@@ -122,5 +159,14 @@ func NewRouter(d Deps) http.Handler {
 		// non-nil Deps.UI alongside the existing "/api/" catch-all.
 		mux.Handle("/", uiHandler(d.UI, d.UIPresent))
 	}
-	return withMiddleware(mux, d.Log)
+	var handler http.Handler = mux
+	if d.Mode == config.ModeHosted {
+		// Innermost first: authenticate wraps the mux, originGuard wraps
+		// authenticate, so the guard runs first. Constructed only in hosted
+		// mode, so standalone's request path gains exactly zero comparisons
+		// (design §7).
+		handler = s.authenticate(handler)
+		handler = s.originGuard(handler)
+	}
+	return withMiddleware(handler, d.Log)
 }

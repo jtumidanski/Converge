@@ -341,8 +341,32 @@ func TestDeleteAccountClearsTheCookie(t *testing.T) {
 	}
 }
 
+// TestAuthRoutesAre404InStandalone proves NewRouter's real registration (not
+// authTestRouter's scaffolding): with Mode left at ModeStandalone, every
+// /api/auth/* route except the always-public "mode" one is unregistered, so
+// the "/api/" catch-all answers 404 NOT_FOUND for it.
 func TestAuthRoutesAre404InStandalone(t *testing.T) {
-	t.Skip("route registration lands in Task 19")
+	h := NewRouter(Deps{Mode: config.ModeStandalone, Log: testLogger()})
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodPost, "/api/auth/register"},
+		{http.MethodPost, "/api/auth/login"},
+		{http.MethodPost, "/api/auth/logout"},
+		{http.MethodGet, "/api/auth/me"},
+		{http.MethodDelete, "/api/auth/me"},
+		{http.MethodPost, "/api/auth/password"},
+	} {
+		w := doAuth(t, h, tc.method, tc.path, "")
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s %s: status = %d, want 404; body=%s", tc.method, tc.path, w.Code, w.Body.String())
+			continue
+		}
+		assertErrorCode(t, w, "NOT_FOUND")
+	}
+	// /api/auth/mode stays registered and unauthenticated in standalone.
+	w := doAuth(t, h, http.MethodGet, "/api/auth/mode", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("mode: status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
 }
 
 func TestStateChangingAuthRoutesRequireTheOriginCheck(t *testing.T) {

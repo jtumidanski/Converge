@@ -9,14 +9,19 @@ import (
 	"github.com/jtumidanski/converge/internal/jsonapi"
 )
 
-// publicRoute lists the three routes reachable without a login session
-// (FR-4.1). /healthz and the embedded UI are handled by the /api/ prefix
-// check in the middleware, not here.
+// publicRoute lists the routes reachable without a login session (FR-4.1).
+// /healthz and the embedded UI are handled by the /api/ prefix check in the
+// middleware, not here.
+//
+// logout is public too: api-contracts.md documents only a 204 response for
+// it, never a 401, and Service.Logout treats a missing or stale token as a
+// no-op. Gating it on authenticate would mean a caller holding an expired
+// cookie could never clear it.
 func publicRoute(method, path string) bool {
 	switch path {
 	case "/api/auth/mode":
 		return method == http.MethodGet
-	case "/api/auth/register", "/api/auth/login":
+	case "/api/auth/register", "/api/auth/login", "/api/auth/logout":
 		return method == http.MethodPost
 	default:
 		return false

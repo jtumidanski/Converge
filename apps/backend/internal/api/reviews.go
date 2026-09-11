@@ -118,21 +118,33 @@ func (s *server) listReviews(w http.ResponseWriter, r *http.Request) {
 // apart, per session.Store.Get's documented contract.
 func (s *server) sessionFor(w http.ResponseWriter, r *http.Request) (session.Session, bool) {
 	id := r.PathValue("id")
+	scope := scopeFrom(r)
 	if err := workspace.ValidateSessionID(id); err != nil {
-		_ = jsonapi.WriteError(w, http.StatusNotFound, "NOT_FOUND", jsonapi.StatusTitle(http.StatusNotFound), "No review exists with that id.")
+		s.writeReviewNotFound(w)
 		return session.Session{}, false
 	}
-	sess, ok := s.deps.Service.Get(id, scopeFrom(r))
+	sess, ok := s.deps.Service.Get(id, scope)
 	if !ok {
-		if s.deps.Service.Corrupted(id) {
+		// Corrupted is consulted only when unscoped. A corrupt session.json
+		// has no readable owner, so reporting 500 for one in hosted mode
+		// would confirm that *some* review exists with this id — the
+		// disclosure FR-4.2 exists to prevent. Hosted answers 404 either way;
+		// the operator still sees the error LoadAll logged at startup.
+		if !scope.IsScoped() && s.deps.Service.Corrupted(id) {
 			s.deps.Log.Error("session record unreadable", slog.String("session", id))
-			_ = jsonapi.WriteError(w, http.StatusInternalServerError, "GIT_FAILURE", jsonapi.StatusTitle(http.StatusInternalServerError), "This review's stored state could not be read.")
+			_ = jsonapi.WriteError(w, http.StatusInternalServerError, "GIT_FAILURE",
+				jsonapi.StatusTitle(http.StatusInternalServerError), "This review's stored state could not be read.")
 			return session.Session{}, false
 		}
-		_ = jsonapi.WriteError(w, http.StatusNotFound, "NOT_FOUND", jsonapi.StatusTitle(http.StatusNotFound), "No review exists with that id.")
+		s.writeReviewNotFound(w)
 		return session.Session{}, false
 	}
 	return sess, true
+}
+
+func (s *server) writeReviewNotFound(w http.ResponseWriter) {
+	_ = jsonapi.WriteError(w, http.StatusNotFound, "NOT_FOUND",
+		jsonapi.StatusTitle(http.StatusNotFound), "No review exists with that id.")
 }
 
 func (s *server) getReview(w http.ResponseWriter, r *http.Request) {
@@ -145,13 +157,36 @@ func (s *server) getReview(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// deleteReview is idempotent and always answers 204.
+// deleteReview is idempotent.
+//
+// In standalone mode it answers 204 for any id, unchanged. In hosted mode an
+// id the caller cannot see answers 404 — which is the same answer an unknown
+// id gets, so nothing is disclosed (FR-4.2).
+//
+// This is the only handler that inspects visibility itself. Everywhere else
+// the scoped store's "not found" flows into the existing ErrNotFound -> 404
+// mapping. The exception exists because the pre-hosted contract for DELETE is
+// an unconditional 204, and requirement #1 is that standalone behaviour does
+// not change.
 func (s *server) deleteReview(w http.ResponseWriter, r *http.Request) {
+	scope := scopeFrom(r)
 	id := r.PathValue("id")
-	if err := workspace.ValidateSessionID(id); err == nil {
-		if err := s.deps.Service.Finish(r.Context(), id, scopeFrom(r)); err != nil && !errors.Is(err, session.ErrNotFound) {
-			s.deps.Log.Warn("finish failed", "session", id, "error", err)
+	if err := workspace.ValidateSessionID(id); err != nil {
+		if scope.IsScoped() {
+			s.writeReviewNotFound(w)
+			return
 		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if scope.IsScoped() {
+		if _, ok := s.deps.Service.Get(id, scope); !ok {
+			s.writeReviewNotFound(w)
+			return
+		}
+	}
+	if err := s.deps.Service.Finish(r.Context(), id, scope); err != nil && !errors.Is(err, session.ErrNotFound) {
+		s.deps.Log.Warn("finish failed", "session", id, "error", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
