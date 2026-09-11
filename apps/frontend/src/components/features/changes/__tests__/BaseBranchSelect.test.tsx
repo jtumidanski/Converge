@@ -17,15 +17,18 @@ function branch(name: string, isDefault = false) {
   };
 }
 
-function renderSelect(onChange = vi.fn()) {
+function renderSelect(
+  onChange = vi.fn(),
+  overrides: { value?: string; defaultBranch?: string } = {},
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   render(
     <QueryClientProvider client={client}>
       <BaseBranchSelect
         providerId="gl"
         repository="atlas/server"
-        value="main"
-        defaultBranch="main"
+        value={overrides.value ?? "main"}
+        defaultBranch={overrides.defaultBranch ?? "main"}
         onChange={onChange}
       />
     </QueryClientProvider>,
@@ -37,11 +40,11 @@ describe("BaseBranchSelect", () => {
   it("shows the current base on the trigger", () => {
     server.use(
       http.get("/api/providers/gl/repositories/:repo/branches", () =>
-        HttpResponse.json(listDoc([branch("main", true)])),
+        HttpResponse.json(listDoc([branch("main", true), branch("develop")])),
       ),
     );
-    renderSelect();
-    expect(screen.getByRole("combobox", { name: /base/i })).toHaveTextContent("main");
+    renderSelect(vi.fn(), { value: "develop", defaultBranch: "main" });
+    expect(screen.getByRole("combobox", { name: /base/i })).toHaveTextContent("develop");
   });
 
   it("pins the repository default at the top even when the server did not", async () => {
