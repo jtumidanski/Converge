@@ -162,6 +162,55 @@ func toRepositories(raw []repoJSON, providerID string) ([]provider.Repository, e
 	return items, nil
 }
 
+// ListBranches lists repo's branches. The GitHub branches endpoint has no
+// name filter, so a search walks pages and filters client-side.
+func (c *Client) ListBranches(ctx context.Context, repo provider.Repository, search string, page provider.Page) (provider.Slice[provider.Branch], error) {
+	if err := gitx.ValidateRepoFullName(repo.FullName()); err != nil {
+		return provider.Slice[provider.Branch]{}, err
+	}
+	page = page.Normalize()
+	path := "/repos/" + repo.FullName() + "/branches"
+	if search == "" {
+		var raw []branchJSON
+		hasNext, err := c.get(ctx, path, url.Values{"per_page": {strconv.Itoa(page.Size)}, "page": {strconv.Itoa(page.Number)}}, &raw)
+		if err != nil {
+			return provider.Slice[provider.Branch]{}, err
+		}
+		items, err := toBranches(raw, repo.DefaultBranch())
+		if err != nil {
+			return provider.Slice[provider.Branch]{}, err
+		}
+		return provider.Slice[provider.Branch]{Items: items, HasNext: hasNext}, nil
+	}
+	needle := strings.ToLower(search)
+	return provider.FilterWalk(ctx, page, maxSearchPages,
+		func(ctx context.Context, upstream int) ([]provider.Branch, bool, error) {
+			var raw []branchJSON
+			hasNext, err := c.get(ctx, path, url.Values{"per_page": {strconv.Itoa(providerPage)}, "page": {strconv.Itoa(upstream)}}, &raw)
+			if err != nil {
+				return nil, false, err
+			}
+			items, err := toBranches(raw, repo.DefaultBranch())
+			if err != nil {
+				return nil, false, err
+			}
+			return items, hasNext, nil
+		},
+		func(b provider.Branch) bool { return strings.Contains(strings.ToLower(b.Name()), needle) })
+}
+
+func toBranches(raw []branchJSON, defaultBranch string) ([]provider.Branch, error) {
+	items := make([]provider.Branch, 0, len(raw))
+	for _, b := range raw {
+		br, err := b.toModel(defaultBranch)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, br)
+	}
+	return items, nil
+}
+
 // GetRepository fetches a single repository by "owner/name".
 func (c *Client) GetRepository(ctx context.Context, fullName string) (provider.Repository, error) {
 	if err := gitx.ValidateRepoFullName(fullName); err != nil {

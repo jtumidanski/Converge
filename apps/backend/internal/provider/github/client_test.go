@@ -276,3 +276,67 @@ func TestListRepositoriesWithoutSearchIsUnchanged(t *testing.T) {
 		t.Errorf("query = %s, want per_page=30 (the caller's page size, not the walk size)", (*calls)[0].query)
 	}
 }
+
+func TestListBranchesMapsDefaultFromRepository(t *testing.T) {
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/atlas/server/branches" {
+			w.WriteHeader(404)
+			return
+		}
+		query = r.URL.RawQuery
+		_, _ = w.Write(fixture(t, "branches.json"))
+	}))
+	defer srv.Close()
+	c := New("gh", "GitHub", srv.URL, config.NewSecret("ghp_test"), srv.Client(), nil)
+	repo, err := provider.NewRepositoryBuilder().SetProviderID("gh").SetFullName("atlas/server").
+		SetDefaultBranch("main").SetCloneURL("https://github.test/atlas/server.git").Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := c.ListBranches(context.Background(), repo, "", provider.Page{Number: 1, Size: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 3 {
+		t.Fatalf("items = %d, want 3", len(got.Items))
+	}
+	// GitHub's branch payload carries no default flag; it is derived from the
+	// repository's DefaultBranch.
+	var main provider.Branch
+	for _, b := range got.Items {
+		if b.Name() == "main" {
+			main = b
+		} else if b.IsDefault() {
+			t.Errorf("%s reported as default", b.Name())
+		}
+	}
+	if !main.IsDefault() || main.SHA() != "2222222222222222222222222222222222222222" {
+		t.Errorf("main = %+v", main)
+	}
+	if !strings.Contains(query, "per_page=30") {
+		t.Errorf("query = %s, want per_page=30", query)
+	}
+	if strings.Contains(query, "search") {
+		t.Errorf("query = %s, want no search parameter (GitHub has none)", query)
+	}
+}
+
+func TestListBranchesSearchFiltersClientSide(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(fixture(t, "branches.json"))
+	}))
+	defer srv.Close()
+	c := New("gh", "GitHub", srv.URL, config.NewSecret("ghp_test"), srv.Client(), nil)
+	repo, _ := provider.NewRepositoryBuilder().SetProviderID("gh").SetFullName("atlas/server").
+		SetDefaultBranch("main").SetCloneURL("https://github.test/atlas/server.git").Build()
+
+	got, err := c.ListBranches(context.Background(), repo, "rel", provider.Page{Number: 1, Size: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 1 || got.Items[0].Name() != "release/1.0" {
+		t.Fatalf("items = %+v, want only release/1.0", got.Items)
+	}
+}

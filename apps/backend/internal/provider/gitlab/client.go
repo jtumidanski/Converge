@@ -90,6 +90,33 @@ func (c *Client) ListRepositories(ctx context.Context, search string, page provi
 	return provider.Slice[provider.Repository]{Items: items, HasNext: next != ""}, nil
 }
 
+// ListBranches lists repo's branches. GitLab's search is a substring match
+// with optional ^/$ anchors; both are harmless and are passed through.
+func (c *Client) ListBranches(ctx context.Context, repo provider.Repository, search string, page provider.Page) (provider.Slice[provider.Branch], error) {
+	if err := gitx.ValidateRepoFullName(repo.FullName()); err != nil {
+		return provider.Slice[provider.Branch]{}, err
+	}
+	page = page.Normalize()
+	q := url.Values{"per_page": {strconv.Itoa(page.Size)}, "page": {strconv.Itoa(page.Number)}}
+	if search != "" {
+		q.Set("search", search)
+	}
+	var raw []branchJSON
+	next, err := c.get(ctx, projectPath(repo.FullName())+"/repository/branches", q, &raw)
+	if err != nil {
+		return provider.Slice[provider.Branch]{}, err
+	}
+	items := make([]provider.Branch, 0, len(raw))
+	for _, b := range raw {
+		br, err := b.toModel()
+		if err != nil {
+			return provider.Slice[provider.Branch]{}, err
+		}
+		items = append(items, br)
+	}
+	return provider.Slice[provider.Branch]{Items: items, HasNext: next != ""}, nil
+}
+
 func (c *Client) GetRepository(ctx context.Context, fullName string) (provider.Repository, error) {
 	if err := gitx.ValidateRepoFullName(fullName); err != nil {
 		return provider.Repository{}, err

@@ -47,3 +47,52 @@ func TestListRepositoriesEmptySearchReturnsAll(t *testing.T) {
 		t.Fatalf("items = %d, want 2", len(got.Items))
 	}
 }
+
+func branch(t *testing.T, name string, isDefault bool) provider.Branch {
+	t.Helper()
+	b, err := provider.NewBranchBuilder().SetName(name).SetDefault(isDefault).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestListBranchesOrdersDefaultFirstThenByName(t *testing.T) {
+	p := New("fake", provider.KindGitLab)
+	r := repo(t, "atlas/server")
+	p.AddRepository(r)
+	p.AddBranch("atlas/server", branch(t, "release/1.0", false))
+	p.AddBranch("atlas/server", branch(t, "develop", false))
+	p.AddBranch("atlas/server", branch(t, "main", true))
+
+	got, err := p.ListBranches(context.Background(), r, "", provider.Page{Number: 1, Size: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := []string{}
+	for _, b := range got.Items {
+		names = append(names, b.Name())
+	}
+	want := []string{"main", "develop", "release/1.0"}
+	for i := range want {
+		if i >= len(names) || names[i] != want[i] {
+			t.Fatalf("names = %v, want %v", names, want)
+		}
+	}
+}
+
+func TestListBranchesFiltersBySubstring(t *testing.T) {
+	p := New("fake", provider.KindGitLab)
+	r := repo(t, "atlas/server")
+	p.AddRepository(r)
+	p.AddBranch("atlas/server", branch(t, "main", true))
+	p.AddBranch("atlas/server", branch(t, "release/1.0", false))
+
+	got, err := p.ListBranches(context.Background(), r, "rel", provider.Page{Number: 1, Size: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 1 || got.Items[0].Name() != "release/1.0" {
+		t.Fatalf("items = %+v", got.Items)
+	}
+}
