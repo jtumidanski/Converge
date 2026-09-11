@@ -31,4 +31,5 @@ export const strings = {
   reviewsUnavailableTitle: "Could not load reviews in progress",
   reviewDiscardFailed: "The review could not be discarded.",
   reviewsInProgressCount: "reviews in progress",
+  noTicket: "No ticket",
 } as const;

@@ -1,7 +1,8 @@
 import { ticketKey } from "@/lib/changes/ticketKey";
+import { strings } from "@/lib/strings";
 import type { Change } from "@/types/models/change";
 
-export const NO_TICKET_LABEL = "No ticket";
+export const NO_TICKET_LABEL = strings.noTicket;
 
 export interface TicketGroup {
   /** null for the catch-all group. */
