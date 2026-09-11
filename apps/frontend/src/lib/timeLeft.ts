@@ -14,7 +14,7 @@ export function timeLeft(expiresAt: string, now: Date = new Date()): string {
   if (Number.isNaN(ms)) return "—";
   const remaining = ms - now.getTime();
   if (remaining <= 0) return strings.expired;
-  if (remaining >= HOUR_MS) return `${Math.floor(remaining / HOUR_MS)}h left`;
-  if (remaining >= MINUTE_MS) return `${Math.floor(remaining / MINUTE_MS)}m left`;
-  return "<1m left";
+  if (remaining >= HOUR_MS) return strings.hoursLeft(Math.floor(remaining / HOUR_MS));
+  if (remaining >= MINUTE_MS) return strings.minutesLeft(Math.floor(remaining / MINUTE_MS));
+  return strings.underMinuteLeft;
 }

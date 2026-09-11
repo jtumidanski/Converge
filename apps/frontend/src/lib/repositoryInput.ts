@@ -1,4 +1,10 @@
-/** Mirrors gitx.ValidateRepoFullName: owner/name, no traversal, no leading -, . or /. */
+/**
+ * Intentionally stricter than gitx.ValidateRepoFullName: owner/name, no
+ * traversal, no leading -, . or /. The backend only rejects a leading `/`,
+ * `-`, or `.` on the whole string plus `.`/`..`/`..`-containing segments; this
+ * client rule additionally rejects any segment that merely starts with `.`
+ * or `-` (e.g. it blocks `org/.github`, which the backend would accept).
+ */
 const REPO_NAME = /^[A-Za-z0-9_.-]+(\/[A-Za-z0-9_.-]+)+$/;
 
 export function isValidRepositoryName(text: string): boolean {
