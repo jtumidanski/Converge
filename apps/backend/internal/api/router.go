@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jtumidanski/converge/internal/auth"
+	"github.com/jtumidanski/converge/internal/config"
 	"github.com/jtumidanski/converge/internal/jsonapi"
 	"github.com/jtumidanski/converge/internal/provider"
 	"github.com/jtumidanski/converge/internal/review"
@@ -40,6 +42,24 @@ type Deps struct {
 	// wait for it to return before the shared git directories it depends on
 	// are removed. NewRouter substitutes a private WaitGroup when it is nil.
 	Background *sync.WaitGroup
+
+	// Mode decides whether the auth and settings routes are registered at all
+	// and whether the auth middlewares are constructed. In standalone mode
+	// the absence of a route *is* the 404 behaviour FR-4.3 requires, so no
+	// handler contains a "return 404 in standalone" branch.
+	Mode config.Mode
+	// Auth is non-nil only in hosted mode.
+	Auth *auth.Service
+	// SecureCookies and TrustedProxy come straight from configuration.
+	SecureCookies bool
+	TrustedProxy  bool
+	// LoginSessionTTL sets the session cookie's Max-Age.
+	LoginSessionTTL time.Duration
+	// AuthSweep, when set, is run every CleanupInterval alongside the
+	// review-session sweeper.
+	AuthSweep func(context.Context) error
+	// DBPing, when set, makes /healthz report database reachability.
+	DBPing func(context.Context) error
 }
 
 type server struct {

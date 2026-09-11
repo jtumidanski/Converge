@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/jtumidanski/converge/internal/auth"
 	"github.com/jtumidanski/converge/internal/jsonapi"
 	"github.com/jtumidanski/converge/internal/provider"
 	"github.com/jtumidanski/converge/internal/review"
@@ -29,6 +30,10 @@ func writeDomainError(w http.ResponseWriter, log *slog.Logger, err error) {
 }
 
 func classify(err error) (int, string, string) {
+	var ae *auth.Error
+	if errors.As(err, &ae) {
+		return ae.Status(), string(ae.Code), ae.Message
+	}
 	var ie *review.InputError
 	if errors.As(err, &ie) {
 		return http.StatusBadRequest, string(ie.Code), ie.Message
