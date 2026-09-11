@@ -23,3 +23,36 @@ services:
 volumes:
   converge-repositories:
   converge-workspaces:
+  # converge-database:
+
+# Hosted mode: uncomment this service instead of (or alongside, with a
+# different name) the standalone one above. The database directory MUST be a
+# persisted volume — without it, every restart loses every account. See
+# README.md's "Modes" section and docs/hosted-mode.md.
+#
+# services:
+#   converge:
+#     image: ${IMAGE_REPOSITORY:-converge}:${VERSION:-latest}
+#     build:
+#       context: .
+#       args:
+#         VERSION: ${VERSION:-dev}
+#     env_file:
+#       - .env
+#     environment:
+#       CONVERGE_MODE: hosted
+#       CONVERGE_SECRET_KEY: ${CONVERGE_SECRET_KEY}
+#       CONVERGE_DATABASE_PATH: /data/db/converge.db
+#     ports:
+#       - "${APP_PORT:-8080}:${APP_PORT:-8080}"
+#     volumes:
+#       - converge-repositories:/data/repositories
+#       - converge-workspaces:/data/workspaces
+#       - converge-database:/data/db
+#     restart: unless-stopped
+#     healthcheck:
+#       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${APP_PORT:-8080}/healthz >/dev/null || exit 1"]
+#       interval: 30s
+#       timeout: 5s
+#       retries: 3
+#       start_period: 10s

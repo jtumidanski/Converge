@@ -77,8 +77,16 @@ cd apps/backend
 go list -deps ./internal/auth | grep -E 'converge/internal/(review|session|api)$'   # must be empty
 go list -deps ./internal/review | grep -E 'converge/internal/(auth|db)$'            # must be empty
 go list -deps ./internal/identity | grep converge/internal                          # must be empty
-go list -deps ./cmd/converge-cli | grep -E 'converge/internal/(auth|db)$'           # must be empty
 ```
+
+The fourth check from the original plan text, `go list -deps ./cmd/converge-cli | grep -E
+'converge/internal/(auth|db)$'` expected empty, is **not achievable** and has been dropped
+from the enforced list: `cmd/converge-cli` calls `app.New`, and `internal/app` unconditionally
+imports `internal/auth` and `internal/db` as struct field types on `App` regardless of mode.
+Go's import graph is static, so this always reports both packages. The property that matters —
+`cmd/converge-cli` never opens a database file at runtime — is behavioral and is covered by the
+Task 20 smoke test instead (see `docs/tasks/task-005-hosted-multi-user-mode/plan.md` Task 20,
+Step 4 note).
 
 ---
 
@@ -238,10 +246,10 @@ discovering the size and build-time cost at the end (design §12).
 
 ## 10. Acceptance criteria coverage
 
-PRD §10 has 44 checkboxes across seven groups. The mapping from each to its proving test is
-produced in **Task 28, Step 6** and recorded in this file under a heading added there. That
-step is not optional paperwork: a criterion with no named test or hand-verified command is
-unfinished work, not a documentation gap.
+PRD §10 has **35** checkboxes across seven groups (corrected count: the original placeholder
+below said 44, which over-counted). The mapping from each to its proving test is produced in
+**Task 28, Step 6** and recorded here. A criterion with no named test or hand-verified command
+is unfinished work, not a documentation gap.
 
 Group-to-task index, so the walk starts from somewhere:
 
@@ -254,3 +262,130 @@ Group-to-task index, so the walk starts from somewhere:
 | Isolation (4) | 10, 11, 12, 19, 27 |
 | UI (4) | 22, 23, 24 |
 | Build gates (2) | 28 |
+
+### Acceptance criteria coverage (Task 28, Step 6)
+
+All test functions below live under `apps/backend` unless marked `frontend`; file paths are
+relative to that root. Verified by running the exact test named, or (for the two build-gate
+rows) by hand as part of this task's Step 5.
+
+**Mode and backwards compatibility**
+
+1. No new env vars → standalone, no DB file, existing tests unchanged —
+   `internal/app/app_test.go:TestStandaloneCreatesNoDatabaseFile`, plus a clean
+   `go test -race -count=1 ./...` run (this task, Step 5).
+2. A session from the previous release is still listed/resumable after upgrade —
+   `internal/app/app_test.go:TestNewLoadAllRestoresExistingSessions`.
+3. `CONVERGE_MODE=hosted` without `CONVERGE_SECRET_KEY` fails to start, naming the variable —
+   `internal/app/app_test.go:TestMissingSecretKeyIsAStartupError`.
+4. `CONVERGE_MODE=nonsense` fails to start, naming `CONVERGE_MODE` —
+   `internal/config/config_test.go:TestModeRejectsUnknownValue`.
+5. `CONVERGE_MODE=hosted` with `PROVIDERS__*` set logs one warning and ignores them —
+   `internal/app/app_test.go:TestHostedWarnsAboutIgnoredProviderVariables`.
+6. Standalone: `POST /api/auth/login` and `GET /api/settings/providers` both `404` —
+   `internal/api/auth_test.go:TestAuthRoutesAre404InStandalone` and
+   `internal/api/settings_providers_test.go:TestSettingsRoutesAre404InStandalone`.
+7. `GET /api/auth/mode` returns the correct mode, unauthenticated, in both modes —
+   `internal/api/auth_test.go:TestAuthModeReportsTheMode`.
+
+**Accounts**
+
+1. Register, logout, login round trip succeeds —
+   `internal/auth/service_test.go:TestRegisterThenLoginRoundTrip` and
+   `internal/api/auth_test.go:TestLoginAndLogout`.
+2. A case-insensitive duplicate username returns `USERNAME_TAKEN` —
+   `internal/auth/service_test.go:TestRegisterRejectsACaseInsensitiveDuplicate`.
+3. A 7-character password is `WEAK_PASSWORD`; 8 characters is accepted —
+   `internal/auth/service_test.go:TestRegisterValidatesInput`.
+4. Wrong password and unknown username return identical status/code/message —
+   `internal/auth/service_test.go:TestLoginIsIndistinguishableBetweenUnknownUserAndWrongPassword`.
+5. Changing the password invalidates other sessions but not the caller's; old password fails —
+   `internal/auth/service_test.go:TestChangePasswordRevokesOtherSessionsButNotTheCaller` and
+   `internal/api/auth_test.go:TestChangePasswordKeepsTheCallingSession`.
+6. Deleting an account removes its DB rows, review sessions/workspaces, and mirror namespace;
+   its cookie stops authenticating —
+   `internal/auth/service_test.go:TestDeleteAccountRemovesRowsAndCallsThePurger`,
+   `internal/api/auth_test.go:TestDeleteAccountClearsTheCookie`, and
+   `internal/mirror/cache_test.go:TestPurgeNamespaceRemovesOnlyThatUser`.
+7. Six consecutive failed logins for one username return `429`/`Retry-After`, surviving a
+   restart —
+   `internal/auth/service_test.go:TestLoginEngagesTheThrottle`,
+   `internal/api/auth_test.go:TestLoginReturnsRetryAfterOnLockout`, and
+   `internal/auth/throttle_test.go:TestLockoutSurvivesReopeningTheDatabase`.
+
+**Sessions and CSRF**
+
+1. The session cookie is `HttpOnly`/`SameSite=Lax`, and `Secure` when
+   `CONVERGE_SECURE_COOKIES=true` —
+   `internal/api/authmw_test.go:TestSessionCookieAttributes`.
+2. No log line in any test run contains a session token, password, provider token, or master
+   key — `internal/app/secrets_test.go:TestNoSecretReachesTheLog`.
+3. `POST /api/reviews` with a foreign `Origin` is `403`/`FORBIDDEN` —
+   `internal/api/isolation_test.go:TestCreateReviewWithAForeignOriginIs403`.
+4. A login session past absolute or idle expiry is rejected before the sweeper runs, and
+   removed by the sweeper —
+   `internal/auth/service_test.go:TestAuthenticateEnforcesAbsoluteExpiry`,
+   `internal/auth/service_test.go:TestAuthenticateEnforcesIdleExpiry`, and
+   `internal/auth/providers_test.go:TestSweepRemovesExpiredSessionsAndElapsedLockouts`.
+
+**Providers**
+
+1. A user can create, list, edit, and delete their own provider configurations —
+   `internal/api/settings_providers_test.go:TestUserProviderCRUDOverHTTP`.
+2. No API response contains a stored token value; only `tokenLast4` appears —
+   `internal/api/no_token_test.go:TestNoResponseBodyEverContainsAToken`.
+3. Editing a provider with an empty token field leaves the stored token working —
+   `internal/api/settings_providers_test.go:TestPatchWithAnOmittedTokenKeepsTheStoredOne` and
+   `TestPatchWithAnExplicitEmptyTokenKeepsTheStoredOne`.
+4. A second user's `GET /api/providers` does not include the first user's providers —
+   `internal/auth/resolver_test.go:TestResolveIsolatesUsers`.
+5. Creating a provider with an invalid token and `validate=true` returns
+   `PROVIDER_UNAUTHORIZED` and writes nothing —
+   `internal/auth/providers_test.go:TestCreateProviderWithValidateTrueWritesNothingOnRejection`.
+6. Deleting a provider referenced by an active review returns `PROVIDER_IN_USE` —
+   `internal/auth/providers_test.go:TestDeleteProviderRefusesWhileInUse` and
+   `internal/api/settings_providers_test.go:TestDeleteRefusesWhileInUse`.
+7. A token ciphertext copied into another user's row fails to decrypt —
+   `internal/auth/crypt_test.go:TestCiphertextIsBoundToItsRow`.
+
+**Isolation**
+
+1. User A's `GET /api/reviews` never includes user B's reviews —
+   `internal/api/isolation_test.go:TestReviewsAreScopedToTheirOwner`.
+2. `GET /api/reviews/{id}` and `DELETE /api/reviews/{id}` for another user's session return
+   `404` — `internal/api/isolation_test.go:TestForeignReviewIDIs404`.
+3. Two users reviewing the same repository use two mirror directories under
+   `REPOSITORY_CACHE_ROOT/users/<user-id>/` —
+   `internal/mirror/cache_test.go:TestTwoUsersGetIndependentPaths` and
+   `TestScopedNamespaceNestsUnderUsers`.
+4. Mirror prune in hosted mode does not delete a branch belonging to a live review —
+   `internal/mirror/cache_test.go:TestEnsurePruneKeepsLiveReviewBranchesButPrunesStaleOnes`.
+
+**UI** (all `frontend`, relative to `apps/frontend`)
+
+1. Standalone UI renders exactly as before, no account menu, no reachable settings routes —
+   `src/__tests__/App.test.tsx:"mounts no account menu and requests no /api/auth/me in
+   standalone mode"` and `src/__tests__/routes.test.tsx:"excludes the settings and auth
+   paths"`.
+2. Hosted, unauthenticated visit to `/` redirects to `/login` and returns to `/` after login —
+   `src/components/auth/__tests__/RequireAuth.test.tsx:"redirects an unauthenticated visitor
+   to /login with the attempted path as next"` and
+   `src/pages/__tests__/LoginPage.test.tsx:"submits and returns to next"`.
+3. A `401` from any API call redirects to `/login` —
+   `src/components/auth/__tests__/AuthProvider.test.tsx:"redirects to /login and clears the
+   query cache on a 401 from any call"`.
+4. The provider settings form creates, edits, and deletes providers, and never renders a
+   stored token —
+   `src/components/features/settings/__tests__/UserProviderForm.test.tsx:"creates a
+   provider"`/`"edits a provider..."` and
+   `src/pages/__tests__/ProviderSettingsPage.test.tsx:"never renders a stored token"`.
+
+**Build gates**
+
+1. `make lint`, `make test`, `make test-integration`, `make build`, and `make docker-build`
+   are all clean — hand-verified from the repository root in this task, Step 5; all five
+   passed (see the Task 28 report for full output).
+2. `CGO_ENABLED=0 go build ./...` succeeds with the SQLite driver linked in — covered by
+   `make build`'s backend step and independently by `make docker-build`'s multi-stage image
+   build, both of which build with `CGO_ENABLED=0` against `modernc.org/sqlite` (pure Go, no
+   C toolchain required in the image).

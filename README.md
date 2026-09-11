@@ -101,6 +101,59 @@ The server binds to `0.0.0.0:APP_PORT` and adds no authentication. Run it on a
 trusted network or behind your own reverse proxy. There is no OAuth and no
 per-user login: the configured server tokens define what any visitor can see.
 
+## Modes
+
+Converge runs in one of two mutually exclusive modes, fixed for the process
+lifetime by `CONVERGE_MODE`.
+
+### `standalone` (default)
+
+No accounts, no database, one set of server-wide providers from
+`PROVIDERS__*`. This is everything described above and it is unchanged: an
+existing deployment that upgrades and sets no new environment variable
+behaves exactly as before, and no database file is ever created or opened.
+
+### `hosted`
+
+Adds per-user accounts, a login session with an HttpOnly cookie, and per-user
+provider configuration stored encrypted in a small SQLite database.
+`PROVIDERS__*` is ignored in this mode (a single startup `WARN` names the
+ignored variables, never their values) — each user configures their own
+providers after registering.
+
+The minimum to turn it on is two variables: a mode flag and a master
+encryption key.
+
+```sh
+CONVERGE_MODE=hosted
+CONVERGE_SECRET_KEY="$(head -c 32 /dev/urandom | base64)"
+```
+
+`CONVERGE_SECRET_KEY` must be 32 random bytes, base64 standard encoding.
+Generate it once and keep it: it encrypts every stored provider token, it is
+not recoverable from the database, and losing it makes every stored token
+unreadable, requiring every user to re-enter theirs.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CONVERGE_MODE` | `standalone` | `standalone` or `hosted` |
+| `CONVERGE_DATABASE_PATH` | `/data/converge.db` | SQLite file holding users, login sessions, per-user provider configuration, and lockout counters |
+| `CONVERGE_SECRET_KEY` | *(required in hosted mode)* | 32 random bytes, base64 standard encoding; encrypts stored provider tokens |
+| `CONVERGE_SECURE_COOKIES` | `false` | Mark the session cookie `Secure`; set `true` when TLS terminates at a proxy in front of Converge |
+| `CONVERGE_TRUSTED_PROXY` | `false` | Honour `X-Forwarded-For` for the per-IP login throttle; set `true` **only** when a proxy genuinely sits in front — otherwise any client can forge a fresh `X-Forwarded-For` value and sidestep the per-IP lockout entirely |
+| `LOGIN_SESSION_TTL_HOURS` | `720` | Absolute login session lifetime |
+| `LOGIN_SESSION_IDLE_HOURS` | `168` | Login session lifetime since last use |
+
+**Registration is open.** Anyone who can reach `POST /api/auth/register` can
+create an account — there is no invite flow, no approval step, and no
+administrator role. A hosted instance reachable from the internet should sit
+behind a VPN or reverse-proxy authentication; Converge's own login is not a
+substitute for controlling who can reach the server at all.
+
+See `docs/hosted-mode.md` for the operational gaps hosted mode deliberately
+leaves open (password reset, account removal, key rotation, per-user mirror
+disk use) and how to work around each.
+
 ## Command line
 
 `converge-cli` runs the same reconstruction pipeline as the server, with the

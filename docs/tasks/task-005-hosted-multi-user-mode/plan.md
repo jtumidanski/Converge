@@ -3556,7 +3556,7 @@ func (s *Service) ProviderInUse(scope identity.Scope, providerSlug string) bool 
 cd apps/backend && go build ./... 2>&1 | head -40
 ```
 
-`internal/api` and `cmd/converge-cli` pass `identity.Standalone()`; Task 14 replaces the API's with `scopeFrom(r)`.
+`internal/api` and `cmd/converge-cli` pass `identity.Standalone()`; Task 16 replaces the API's with `scopeFrom(r)`.
 
 ```bash
 cd apps/backend && go vet ./... && go test -race -count=1 ./... && go test -race -count=1 -tags integration ./... && go tool golangci-lint run
@@ -3907,7 +3907,7 @@ Create `apps/backend/internal/auth/service_test.go`. A `newService(t)` helper bu
 12. **`TestDeleteAccountRemovesRowsAndCallsThePurger`** — register, add a provider config, log in twice; `DeleteAccount` with the correct password; assert both login sessions no longer authenticate, `UserByID` is `ErrNotFound`, the provider rows are gone, `Invalidate` was called, and the stub `Purger` recorded the user id.
 13. **`TestDeleteAccountRequiresThePassword`** — wrong password gives `INVALID_CREDENTIALS` and **nothing** is deleted.
 14. **`TestDeleteAccountSucceedsEvenWhenThePurgerFails`** — a `Purger` that returns an error; `DeleteAccount` returns nil, the rows are gone, and the stub log recorded an `ERROR`. Reversing this would risk an account that has lost its data but can still log in, which is strictly worse (design §6).
-15. **`TestConcurrentLoginAndProviderListDoNotDeadlock`** — design §12's named risk. Launch 8 goroutines alternating `Login` (Argon2id) and `ListProviders`, `errgroup`-style with a 30s ceiling; assert all complete. This is what proves hashing never happens while the single connection is held by a transaction.
+15. **`TestConcurrentLoginAndProviderListDoNotDeadlock`** — design §12's named risk. `Service` does not yet expose a provider list method (that arrives in Task 15), so alternate 8 goroutines between `Login` (Argon2id) and `Store.ListUserProviders` directly — the same single-connection read Task 15's `Service.ListProviders` will wrap — with a 30s ceiling; assert all complete. This is what proves hashing never happens while the single connection is held by a transaction.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -5777,13 +5777,25 @@ func dbPing(a *app.App) func(context.Context) error {
 }
 ```
 
-`cmd/converge-cli` needs **no change beyond compilation**: it stays standalone-only, wraps everything in `identity.Standalone()` and the static resolver, and never opens the database (design §11). Confirm it does not reference `auth` or `db`:
+`cmd/converge-cli` needs **no change beyond compilation**: it stays standalone-only, wraps everything in `identity.Standalone()` and the static resolver, and never opens the database (design §11).
 
-```bash
-cd apps/backend && go list -deps ./cmd/converge-cli | grep -E 'converge/internal/(auth|db)$'
-```
-
-Expected: no output.
+> **Note (corrected after implementation):** this cannot be verified by grepping the import
+> graph. `cmd/converge-cli` calls `app.New`, and `internal/app` unconditionally imports
+> `internal/auth` and `internal/db` (both are struct field types on `App` — `DB *sql.DB`,
+> `Auth *auth.Service` — regardless of which mode ever runs). Go import graphs are static, so
+>
+> ```bash
+> cd apps/backend && go list -deps ./cmd/converge-cli | grep -E 'converge/internal/(auth|db)$'
+> ```
+>
+> reports both packages and this is unavoidable given Step 3's own code, which the plan also
+> specifies verbatim — there is no way to satisfy both simultaneously without splitting hosted
+> wiring out of the shared `app.New`, which is a real architectural change outside this task's
+> scope. The property that actually matters — `cmd/converge-cli` never opens a database file at
+> runtime — is behavioral, not structural, and is what the smoke test in Step 6 verifies.
+> `app.New(ctx, os.Environ())` would still honor `CONVERGE_MODE=hosted` if that variable is set
+> in the CLI's environment, since the CLI has no guard forcing standalone mode; that residual
+> gap is a design question for a follow-up, not something this task's wiring can silently fix.
 
 - [ ] **Step 5: Run everything**
 

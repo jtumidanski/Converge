@@ -50,6 +50,18 @@ When refactoring shared types or creating common libraries, prefer straightforwa
 
 - Backend package direction: `api → review → {provider, mirror, workspace, diff, session} → gitx`. Nothing imports `api` or `cmd`; `gitx` imports nothing from the module.
 - `internal/session` owns the `Session` model, `ReviewError`, error codes, and the on-disk store. `internal/review` owns landing resolution, the resolve pipeline, the applicator, and the orchestrating service.
+- Persistence is the filesystem in standalone mode. Hosted mode
+  (`CONVERGE_MODE=hosted`) adds a SQLite database at `CONVERGE_DATABASE_PATH`
+  holding **only** users, login sessions, per-user provider configuration, and
+  lockout counters; review sessions remain `session.json` files and
+  `internal/session` keeps its storage responsibility. `internal/auth/store.go`
+  is the only file in the repository that contains SQL.
+- `internal/identity` and `internal/db` are leaves (stdlib only).
+  `internal/auth` sits beside `provider`/`session` and may import
+  `db`, `config`, `identity`, and `provider`; it must never import `review` or
+  `session`, and `review` must never import `auth`. The account-deletion
+  cascade crosses that boundary through the `auth.Purger` and
+  `auth.ProviderUsage` interfaces, wired in `internal/app`.
 - Every git call goes through `gitx.Runner` with an argument slice, never a shell. Client-supplied strings are validated before they reach git.
 - Provider credentials reach git only through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`, never argv and never the stored remote URL.
 - The frontend deviates from `frontend-dev-guidelines` in three agreed ways: Vitest instead of Jest, a thin `fetch` wrapper instead of a caching API client, and plain service objects instead of a `BaseService` class.

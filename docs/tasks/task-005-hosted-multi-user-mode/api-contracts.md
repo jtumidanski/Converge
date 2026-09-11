@@ -112,7 +112,9 @@ Unauthenticated. Hosted only. Same request body as register (`type: "credentials
 
 ## `POST /api/auth/logout`
 
-Requires a session. Hosted only. No request body.
+Public (exempt from the `authenticate` middleware via `publicRoute` — it never returns 401).
+Hosted only. No request body. The session cookie, if present, is read directly by the
+handler rather than by `authenticate`.
 
 **204** — deletes the login session row and sends
 `Set-Cookie: converge_session=; Max-Age=0; …`.
