@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Mockup B — Guided flow</title>
+<link rel="stylesheet" href="mock.css">
+<style>
+  .steps { display: flex; align-items: center; gap: 0; margin: 20px 0 26px; }
+  .step { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+  .step .n { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; }
+  .step.done { color: var(--muted-fg); } .step.done .n { background: var(--card-2); }
+  .step.cur { color: var(--foreground); font-weight: 600; } .step.cur .n { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+  .step .line { width: 56px; height: 1px; background: var(--border); margin: 0 10px; }
+  .providers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .prov { padding: 14px; border-radius: 10px; border: 1px solid var(--border); display: grid; gap: 6px; cursor: pointer; }
+  .prov.on { border-color: var(--foreground); background: var(--card-2); }
+  .prov .logo { width: 28px; height: 28px; border-radius: 6px; background: var(--card-2); display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 12px; }
+  .resume-table td:first-child { width: 8px; padding-right: 0; }
+  .split { display: grid; grid-template-columns: 1fr 340px; gap: 20px; align-items: start; }
+  .compose { position: sticky; top: 72px; }
+  .compose .item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--card-2); }
+  .compose .item .h { color: var(--muted); cursor: grab; }
+  .compose .item .n { width: 18px; height: 18px; border-radius: 50%; background: var(--accent); font-size: 11px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted-fg); }
+  .arrow { text-align: center; color: var(--muted); font-size: 12px; line-height: 1; padding: 2px 0; }
+  .row-click td { cursor: pointer; }
+  .layout { display: grid; grid-template-columns: 1fr; height: calc(100vh - 52px - 48px); }
+  .tabs { height: 48px; border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 20px; gap: 4px; }
+  .tab { padding: 0 12px; height: 48px; display: inline-flex; align-items: center; gap: 8px; color: var(--muted-fg); border-bottom: 2px solid transparent; font-weight: 500; }
+  .tab.on { color: var(--foreground); border-bottom-color: var(--foreground); }
+  .filebar { position: sticky; top: 0; z-index: 3; background: var(--background); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; padding: 8px 16px; }
+  .filepick { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card-2); min-width: 460px; font-family: var(--mono); font-size: 12.5px; }
+  .filedrop { position: absolute; top: 46px; left: 16px; width: 520px; background: var(--card-2); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 16px 48px rgba(0,0,0,.6); padding: 6px; z-index: 4; }
+  .filedrop .f { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; font-family: var(--mono); font-size: 12px; }
+  .filedrop .f.hl { background: var(--accent); }
+  .st { width: 14px; text-align: center; font-weight: 700; font-family: var(--mono); font-size: 11px; }
+  .st.m { color: var(--amber); } .st.a { color: var(--green); } .st.d { color: var(--red); }
+  .sheet { border-top: 1px solid var(--border); background: var(--card); padding: 14px 20px; display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+  .sheet .mr { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; display: grid; gap: 4px; }
+  .fold { margin: 6px 16px; border: 1px dashed var(--border); border-radius: 6px; padding: 4px 12px; color: var(--muted-fg); font-size: 12px; }
+</style></head>
+<body>
+
+<!-- ===================== ROOT ===================== -->
+<section class="screen" data-screen="root">
+  <div class="topbar"><span class="brand">Converge</span><span class="grow"></span><span class="btn ghost icon">☾</span></div>
+  <div class="page" style="max-width:920px">
+    <h1>Combined review</h1>
+    <div class="sub">Review several merged changes as one diff.</div>
+
+    <div class="card" style="margin-top:22px;overflow:hidden">
+      <div class="between" style="padding:12px 14px;border-bottom:1px solid var(--border)"><h2>Resume a review</h2><span class="xs dim">Reviews expire 24h after they are built</span></div>
+      <table class="tbl resume-table">
+        <tbody>
+          <tr class="row-click"><td><span class="dot ok"></span></td>
+            <td><div><b>dematic/dwe/workflow-ui</b> <span class="xs muted">· gitlab-work · master</span></div><div class="xs muted">#1059 #1060 #1061 #1062 · 5 files · <span class="plus">+92</span> <span class="minus">−25</span></div></td>
+            <td class="xs muted" style="width:150px"><div>2 of 5 files viewed</div><div class="progress" style="margin-top:4px"><i style="width:40%"></i></div></td>
+            <td class="xs muted" style="width:110px">22h left</td>
+            <td style="width:150px;text-align:right"><span class="btn ghost sm">Discard</span> <span class="btn sm">Resume</span></td></tr>
+          <tr class="row-click"><td><span class="dot ok"></span></td>
+            <td><div><b>dematic/ait/dgu/ait-graphene-dwe</b> <span class="xs muted">· gitlab-work · main</span></div><div class="xs muted">#80 #81 #82 · 6 files · <span class="plus">+94</span> <span class="minus">−119</span></div></td>
+            <td class="xs muted"><div>Not started</div><div class="progress" style="margin-top:4px"><i style="width:0"></i></div></td>
+            <td class="xs muted">22h left</td>
+            <td style="text-align:right"><span class="btn ghost sm">Discard</span> <span class="btn sm">Resume</span></td></tr>
+          <tr class="row-click"><td><span class="dot warn"></span></td>
+            <td><div><b>dematic/dwe/workflow-ui</b> <span class="xs muted">· gitlab-work · master</span></div><div class="xs muted">#1034 #1035 · <span style="color:var(--amber)">building… applying #1035</span></div></td>
+            <td class="xs muted"><div>Building</div><div class="progress warn" style="margin-top:4px"><i style="width:60%"></i></div></td>
+            <td class="xs muted">—</td>
+            <td style="text-align:right"><span class="btn sm" disabled>Open</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="steps">
+      <span class="step cur"><span class="n">1</span>Provider</span><span class="line"></span>
+      <span class="step"><span class="n">2</span>Repository</span><span class="line"></span>
+      <span class="step"><span class="n">3</span>Changes</span><span class="line"></span>
+      <span class="step"><span class="n">4</span>Review</span>
+    </div>
+
+    <div class="card pad col" style="gap:14px">
+      <div class="between"><h2>Where is the code?</h2><span class="xs dim">Providers come from server config</span></div>
+      <div class="providers">
+        <div class="prov on"><span class="logo">GL</span><b>GitLab (dematic)</b><span class="xs muted">gitlab-work · 1,204 repositories</span></div>
+        <div class="prov"><span class="logo">GH</span><b>GitHub</b><span class="xs muted">github · jtumidanski</span></div>
+        <div class="prov" style="opacity:.6"><span class="logo">GL</span><b>GitLab (personal)</b><span class="xs muted" style="color:var(--red)">token expired · fix in config</span></div>
+      </div>
+      <div class="sep"></div>
+      <div class="between"><h2>Which repository?</h2><span class="xs dim">Type to filter, or paste a GitLab URL</span></div>
+      <div class="input focus"><span class="dim">⌕</span>workflow<span style="border-left:1px solid var(--foreground);height:14px"></span><span class="grow"></span><kbd>↵</kbd></div>
+      <table class="tbl">
+        <tbody>
+          <tr class="row-click sel"><td style="width:24px"><span class="dim">→</span></td><td><b>dematic/dwe/workflow-ui</b></td><td class="mono xs muted">master</td><td class="xs muted" style="text-align:right">opened today</td></tr>
+          <tr class="row-click"><td></td><td>dematic/dwe/workflow-api</td><td class="mono xs muted">main</td><td class="xs muted" style="text-align:right">3d ago</td></tr>
+          <tr class="row-click"><td></td><td>dematic/simulation/products/workflow-sim</td><td class="mono xs muted">develop</td><td class="xs muted" style="text-align:right"></td></tr>
+        </tbody>
+      </table>
+      <div class="between"><span class="xs dim">3 matches</span><span class="btn primary">Continue to changes →</span></div>
+    </div>
+  </div>
+  <div class="note callout"><b>Root page changes.</b> Resume list becomes a compact table with progress and building/conflict states. The new-review path is an explicit 4-step flow: provider cards show health, the repository list filters as you type and is ranked by recent use rather than alphabetically.</div>
+</section>
+
+<!-- ===================== CREATE ===================== -->
+<section class="screen" data-screen="create">
+  <div class="topbar"><span class="brand">Converge</span><span class="crumbs"><span class="sep">/</span><span>New review</span><span class="sep">/</span><span class="cur">dematic/dwe/workflow-ui</span></span><span class="grow"></span><span class="btn ghost icon">☾</span></div>
+  <div class="page">
+    <div class="steps" style="margin-top:0">
+      <span class="step done"><span class="n">✓</span>GitLab (dematic)</span><span class="line"></span>
+      <span class="step done"><span class="n">✓</span>workflow-ui</span><span class="line"></span>
+      <span class="step cur"><span class="n">3</span>Changes</span><span class="line"></span>
+      <span class="step"><span class="n">4</span>Review</span>
+    </div>
+
+    <div class="split">
+      <div>
+        <div class="between" style="margin-bottom:12px">
+          <div class="row">
+            <span class="input" style="width:280px"><span class="dim">⌕</span><span class="ph">Filter…</span></span>
+            <span class="input select" style="width:150px"><span>Author: any</span><span class="dim">▾</span></span>
+            <span class="input select" style="width:150px"><span>Merged: 30d</span><span class="dim">▾</span></span>
+          </div>
+          <span class="row xs muted"><span class="switch on"></span> Hide renovate</span>
+        </div>
+        <div class="card" style="overflow:hidden">
+          <table class="tbl">
+            <thead><tr><th style="width:34px"></th><th style="width:64px">#</th><th>Title</th><th style="width:130px">Author</th><th style="width:96px">Merged</th></tr></thead>
+            <tbody>
+              <tr class="row-click sel"><td><span class="cb on">✓</span></td><td class="mono">#1062</td><td><span class="badge key">DWE-5651</span> warning fix causes an issue</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="xs muted">Sep 9</td></tr>
+              <tr class="row-click sel"><td><span class="cb on">✓</span></td><td class="mono">#1061</td><td><span class="badge key">DWE-5651</span> warning fix</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="xs muted">Sep 9</td></tr>
+              <tr class="row-click sel"><td><span class="cb on">✓</span></td><td class="mono">#1060</td><td><span class="badge key">DWE-5651</span> restored method</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="xs muted">Sep 9</td></tr>
+              <tr class="row-click sel"><td><span class="cb on">✓</span></td><td class="mono">#1059</td><td><span class="badge key">DWE-5651</span> timing fixes</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="xs muted">Sep 9</td></tr>
+              <tr class="row-click"><td><span class="cb"></span></td><td class="mono">#1056</td><td><span class="badge key">DWE-5689</span> operator can be chosen from dropdown</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="xs muted">Sep 8</td></tr>
+              <tr class="row-click"><td><span class="cb"></span></td><td class="mono">#1055</td><td><span class="badge key">DWE-5690</span> switching sites on workstation screen when invalid…</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="xs muted">Sep 8</td></tr>
+              <tr class="row-click"><td><span class="cb"></span></td><td class="mono">#1042</td><td><span class="badge key">DWE-5689</span> workstation site edge cases</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="xs muted">Sep 4</td></tr>
+              <tr class="row-click"><td><span class="cb"></span></td><td class="mono">#1046</td><td><span class="badge key">DWE-5649</span> default locale to en_US</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="xs muted">Sep 4</td></tr>
+              <tr class="row-click"><td><span class="cb"></span></td><td class="mono">#1045</td><td><span class="badge key">DWE-5649</span> cleaning up translations</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="xs muted">Sep 4</td></tr>
+              <tr class="row-click"><td><span class="cb"></span></td><td class="mono">#1041</td><td><span class="badge key">DWE-5661</span> doc update</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="xs muted">Sep 3</td></tr>
+              <tr class="row-click"><td><span class="cb"></span></td><td class="mono">#1040</td><td><span class="badge key">DWE-5661</span> Changed the name of DwsWorkstation.ts</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="xs muted">Sep 3</td></tr>
+              <tr class="row-click"><td><span class="cb"></span></td><td class="mono">#1039</td><td><span class="badge key">DWE-5651</span> minor warning fix <span class="badge warn" title="same ticket as your selection">same ticket</span></td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="xs muted">Sep 3</td></tr>
+            </tbody>
+          </table>
+          <div class="between" style="padding:10px 12px"><span class="xs dim">12 shown · 13 renovate MRs hidden</span><span class="btn ghost sm">Load older</span></div>
+        </div>
+      </div>
+
+      <aside class="compose card pad col" style="gap:10px">
+        <div class="between"><h2>Review composition</h2><span class="btn ghost sm">Clear</span></div>
+        <div class="xs muted">Base</div>
+        <div class="input select"><span class="mono">master</span><span class="dim">▾</span></div>
+        <div class="xs dim">Landing point resolves to the commit immediately before the oldest change.</div>
+        <div class="arrow">↓</div>
+        <div class="item"><span class="h">⋮⋮</span><span class="n">1</span><span class="mono">#1059</span><span class="grow truncate">timing fixes</span><span class="x dim">×</span></div>
+        <div class="arrow">↓</div>
+        <div class="item"><span class="h">⋮⋮</span><span class="n">2</span><span class="mono">#1060</span><span class="grow truncate">restored method</span><span class="x dim">×</span></div>
+        <div class="arrow">↓</div>
+        <div class="item"><span class="h">⋮⋮</span><span class="n">3</span><span class="mono">#1061</span><span class="grow truncate">warning fix</span><span class="x dim">×</span></div>
+        <div class="arrow">↓</div>
+        <div class="item"><span class="h">⋮⋮</span><span class="n">4</span><span class="mono">#1062</span><span class="grow truncate">warning fix causes an issue</span><span class="x dim">×</span></div>
+        <div class="callout" style="margin-top:4px"><b>Hint:</b> #1039 shares ticket DWE-5651 and merged earlier. Include it? <span class="btn ghost sm" style="margin-left:4px">Add</span></div>
+        <div class="sep"></div>
+        <div class="between xs muted"><span>4 changes · all by Eric.Bracey</span><span>Sep 9</span></div>
+        <span class="btn primary" style="justify-content:center">Build review</span>
+      </aside>
+    </div>
+  </div>
+  <div class="note callout"><b>Creation changes.</b> The selection lives in a sticky side panel that shows the exact apply order and base, so "what am I building" is always visible. Ticket keys become badges, and the panel suggests earlier MRs on the same ticket. Whole rows toggle, not just the checkbox.</div>
+</section>
+
+<!-- ===================== REVIEW ===================== -->
+<section class="screen" data-screen="review">
+  <div class="topbar">
+    <span class="brand">Converge</span>
+    <span class="crumbs"><span class="sep">/</span><span>dematic/ait/dgu/ait-graphene-dwe</span><span class="sep">/</span><span class="cur">#80 · #81 · #82</span></span>
+    <span class="grow"></span>
+    <span class="badge ok"><span class="dot ok"></span> Ready · 22h left</span>
+    <span class="btn ghost">Discard</span>
+    <span class="btn primary">Finish review</span>
+  </div>
+  <div class="page wide">
+    <div class="tabs">
+      <span class="tab on">Files <span class="badge solid">6</span></span>
+      <span class="tab">Changes <span class="badge solid">3</span></span>
+      <span class="tab">Conflicts <span class="badge solid">0</span></span>
+      <span class="grow"></span>
+      <span class="xs muted">Base <span class="mono">main @ 6140736</span> · <span class="plus">+94</span> <span class="minus">−119</span></span>
+      <span class="btn sm">Split</span><span class="btn sm primary">Unified</span>
+    </div>
+    <div class="layout">
+      <main style="overflow:auto;position:relative">
+        <div class="filebar">
+          <span class="filepick"><span class="st m">M</span><span class="grow truncate">…/dgu/common/DweBaseTest.java</span><span class="xs"><span class="plus">+11</span> <span class="minus">−1</span></span><span class="dim">▾</span></span>
+          <span class="btn icon sm">←</span><span class="xs muted">1 / 6</span><span class="btn icon sm">→</span>
+          <span class="grow"></span>
+          <span class="row xs muted"><span class="progress" style="width:80px"><i style="width:17%"></i></span>1 viewed</span>
+          <span class="btn sm"><span class="cb"></span> Mark viewed <kbd>v</kbd></span>
+        </div>
+        <div class="filedrop">
+          <div class="input" style="height:30px;margin-bottom:6px"><span class="dim">⌕</span><span class="ph">Jump to file…</span></div>
+          <div class="f hl"><span class="cb on">✓</span><span class="st m">M</span><span class="grow">…/common/DweBaseTest.java</span><span class="xs"><span class="plus">+11</span> <span class="minus">−1</span></span></div>
+          <div class="f"><span class="cb"></span><span class="st m">M</span><span class="grow">…/common/WorkstationBaseTest.java</span><span class="xs"><span class="plus">+42</span> <span class="minus">−27</span></span></div>
+          <div class="f"><span class="cb"></span><span class="st m">M</span><span class="grow">…/screens/WorkstationConnectTest.java</span><span class="xs"><span class="plus">+13</span> <span class="minus">−12</span></span></div>
+          <div class="f"><span class="cb"></span><span class="st m">M</span><span class="grow">…/screens/WorkstationDeepLinkTest.java</span><span class="xs"><span class="plus">+1</span> <span class="minus">−1</span></span></div>
+          <div class="f"><span class="cb"></span><span class="st m">M</span><span class="grow">…/screens/WorkstationLogoffStateTest.java</span><span class="xs"><span class="plus">+0</span> <span class="minus">−37</span></span></div>
+          <div class="f"><span class="cb"></span><span class="st m">M</span><span class="grow">…/screens/WorkstationSiteTest.java</span><span class="xs"><span class="plus">+27</span> <span class="minus">−41</span></span></div>
+        </div>
+
+        <div style="height:250px"></div>
+        <div class="fold">⤒ 18 unmodified lines</div>
+        <div class="diff">
+          <div class="ln"><span>19</span><span>19</span><span><span class="kw">import</span> java.net.URL;</span></div>
+          <div class="ln"><span>20</span><span>20</span><span><span class="kw">import</span> java.net.URLEncoder;</span></div>
+          <div class="ln"><span>21</span><span>21</span><span><span class="kw">import</span> java.nio.charset.StandardCharsets;</span></div>
+          <div class="ln del"><span>22</span><span></span><span><span class="kw">import</span> java.util.<span class="wordd">*</span>;</span></div>
+          <div class="ln add"><span></span><span>22</span><span><span class="kw">import</span> java.util.<span class="word">ArrayList</span>;</span></div>
+          <div class="ln add"><span></span><span>23</span><span><span class="kw">import</span> java.util.HashMap;</span></div>
+          <div class="ln add"><span></span><span>24</span><span><span class="kw">import</span> java.util.LinkedList;</span></div>
+          <div class="ln add"><span></span><span>25</span><span><span class="kw">import</span> java.util.List;</span></div>
+          <div class="ln add"><span></span><span>26</span><span><span class="kw">import</span> java.util.Map;</span></div>
+          <div class="ln add"><span></span><span>27</span><span><span class="kw">import</span> java.util.Objects;</span></div>
+          <div class="ln add"><span></span><span>28</span><span><span class="kw">import</span> java.util.Scanner;</span></div>
+          <div class="ln add"><span></span><span>29</span><span><span class="kw">import</span> java.util.Set;</span></div>
+          <div class="ln add"><span></span><span>30</span><span><span class="kw">import</span> java.util.UUID;</span></div>
+          <div class="ln add"><span></span><span>31</span><span><span class="kw">import</span> java.util.Arrays;</span></div>
+          <div class="ln add"><span></span><span>32</span><span><span class="kw">import</span> java.util.Collections;</span></div>
+          <div class="ln"><span>23</span><span>33</span><span><span class="kw">import</span> java.util.concurrent.TimeUnit;</span></div>
+          <div class="ln"><span>24</span><span>34</span><span></span></div>
+          <div class="ln"><span>25</span><span>35</span><span><span class="kw">import</span> lombok.Getter;</span></div>
+        </div>
+        <div class="fold">⤓ 212 unmodified lines</div>
+      </main>
+    </div>
+    <div class="sheet">
+      <div class="mr"><div class="row"><span class="mono">#80</span><span class="grow truncate">DWE-5651 test fixes</span><span class="badge ok">applied</span></div><div class="xs muted">Eric.Bracey · merged Sep 9 · cherry-pick</div></div>
+      <div class="mr"><div class="row"><span class="mono">#81</span><span class="grow truncate">DWE-5651 gitlab duo changes and warnings</span><span class="badge ok">applied</span></div><div class="xs muted">Eric.Bracey · merged Sep 9 · cherry-pick</div></div>
+      <div class="mr"><div class="row"><span class="mono">#82</span><span class="grow truncate">DWE-5651 gitlab review changes</span><span class="badge ok">applied</span></div><div class="xs muted">Eric.Bracey · merged Sep 9 · cherry-pick</div></div>
+    </div>
+  </div>
+  <div class="note callout"><b>Review changes.</b> Full-width diff with a file picker dropdown and prev/next instead of a permanent sidebar, so long Java paths are no longer truncated. Tabs separate Files / Changes / Conflicts. A bottom sheet shows what was included and how each change landed. Finish and Discard live in the top bar.</div>
+</section>
+
+<div class="harness"><a data-screen="root">1 · Root</a><a data-screen="create">2 · Create</a><a data-screen="review">3 · Review</a><a class="home" href="index.html">All mockups</a></div>
+<script src="mock.js"></script>
+</body></html>

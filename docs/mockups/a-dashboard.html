@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Mockup A — Dashboard</title>
+<link rel="stylesheet" href="mock.css">
+<style>
+  .home { display: grid; grid-template-columns: 1fr 380px; gap: 24px; align-items: start; }
+  .resume { display: grid; gap: 10px; }
+  .resume .card { padding: 14px 16px; display: grid; gap: 10px; }
+  .resume .card:hover { border-color: var(--ring); }
+  .recent { display: grid; gap: 2px; }
+  .recent a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px; }
+  .recent a:hover { background: var(--accent); }
+  .popover { position: absolute; top: 40px; left: 0; right: 0; background: var(--card-2); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 16px 48px rgba(0,0,0,.6); padding: 6px; z-index: 5; }
+  .popover .opt { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 6px; }
+  .popover .opt.hl { background: var(--accent); }
+  .popover .hd { padding: 6px 8px 4px; }
+  .filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .selbar { position: sticky; bottom: 16px; margin-top: 16px; background: var(--card-2); border: 1px solid var(--ring); border-radius: 12px; padding: 12px 14px; box-shadow: 0 16px 48px rgba(0,0,0,.6); display: grid; gap: 10px; }
+  .selchips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .layout { display: grid; grid-template-columns: 300px 1fr; height: calc(100vh - 52px - 56px); }
+  .subhead { height: 56px; border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 20px; gap: 14px; }
+  .tree { border-right: 1px solid var(--border); overflow: auto; padding: 8px; }
+  .tree .dir { display: flex; align-items: center; gap: 6px; padding: 6px 8px; color: var(--muted-fg); font-size: 12px; }
+  .tree .f { display: flex; align-items: center; gap: 8px; padding: 5px 8px 5px 24px; border-radius: 6px; font-family: var(--mono); font-size: 12px; }
+  .tree .f:hover { background: var(--accent); }
+  .tree .f.on { background: var(--accent); box-shadow: inset 2px 0 var(--foreground); }
+  .tree .f .st { width: 14px; text-align: center; font-weight: 700; font-family: var(--mono); font-size: 11px; }
+  .st.m { color: var(--amber); } .st.a { color: var(--green); } .st.d { color: var(--red); } .st.r { color: var(--blue); }
+  .pane { overflow: auto; }
+  .filehead { position: sticky; top: 0; background: var(--background); border-bottom: 1px solid var(--border); padding: 10px 16px; display: flex; align-items: center; gap: 12px; z-index: 2; }
+  .fold { margin: 6px 16px; border: 1px dashed var(--border); border-radius: 6px; padding: 4px 12px; color: var(--muted-fg); font-size: 12px; display: flex; gap: 12px; }
+  .filefoot { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-top: 1px solid var(--border); margin-top: 8px; }
+</style></head>
+<body>
+
+<!-- ===================== ROOT ===================== -->
+<section class="screen" data-screen="root">
+  <div class="topbar"><span class="brand">Converge</span><span class="grow"></span><span class="btn ghost icon">☾</span></div>
+  <div class="page">
+    <div class="between" style="margin-bottom:22px">
+      <div><h1>Reviews</h1><div class="sub">Pick up an open review, or start a new one from a repository.</div></div>
+      <span class="btn"><kbd>⌘</kbd><kbd>K</kbd> Jump to repository</span>
+    </div>
+
+    <div class="home">
+      <div>
+        <div class="between" style="margin-bottom:10px"><h3>In progress · 2</h3><span class="xs dim">Sorted by last opened</span></div>
+        <div class="resume">
+          <div class="card">
+            <div class="between">
+              <div class="row"><span class="dot ok"></span><b>dematic/dwe/workflow-ui</b><span class="badge">gitlab-work</span><span class="badge mono">master</span></div>
+              <div class="row"><span class="btn ghost sm danger">Discard</span><span class="btn primary sm">Resume →</span></div>
+            </div>
+            <div class="row" style="gap:6px;flex-wrap:wrap">
+              <span class="badge key">DWE-5651</span>
+              <span class="badge solid">#1059 timing fixes</span><span class="badge solid">#1060 restored method</span><span class="badge solid">#1061 warning fix</span><span class="badge solid">#1062 warning fix causes an issue</span>
+            </div>
+            <div class="between xs muted">
+              <span>4 MRs · 5 files · <span class="plus">+92</span> <span class="minus">−25</span> · 2 of 5 files viewed</span>
+              <span class="row" style="gap:10px"><span>expires in 22h</span><span class="progress" style="width:80px"><i style="width:8%"></i></span></span>
+            </div>
+          </div>
+          <div class="card">
+            <div class="between">
+              <div class="row"><span class="dot ok"></span><b>dematic/ait/dgu/ait-graphene-dwe</b><span class="badge">gitlab-work</span><span class="badge mono">main</span></div>
+              <div class="row"><span class="btn ghost sm danger">Discard</span><span class="btn primary sm">Resume →</span></div>
+            </div>
+            <div class="row" style="gap:6px;flex-wrap:wrap">
+              <span class="badge key">DWE-5651</span>
+              <span class="badge solid">#80 test fixes</span><span class="badge solid">#81 gitlab duo changes and warnings</span><span class="badge solid">#82 gitlab review changes</span>
+            </div>
+            <div class="between xs muted">
+              <span>3 MRs · 6 files · <span class="plus">+94</span> <span class="minus">−119</span> · not started</span>
+              <span class="row" style="gap:10px"><span>expires in 22h</span><span class="progress" style="width:80px"><i style="width:8%"></i></span></span>
+            </div>
+          </div>
+          <div class="card" style="border-color:rgba(248,113,113,.35)">
+            <div class="between">
+              <div class="row"><span class="dot err"></span><b>dematic/dwe/workflow-ui</b><span class="badge err">Conflicted</span></div>
+              <div class="row"><span class="btn ghost sm danger">Discard</span><span class="btn sm">See details</span></div>
+            </div>
+            <div class="xs muted">#1035 could not be applied on top of #1034 · 2 conflicting files · started yesterday</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col" style="gap:16px">
+        <div class="card pad col" style="gap:12px">
+          <h2>Start a review</h2>
+          <div style="position:relative">
+            <div class="input focus"><span class="dim">⌕</span>dematic/dwe/wo<span style="border-left:1px solid var(--foreground);height:14px"></span></div>
+            <div class="popover">
+              <div class="hd xs dim">Matches in GitLab (dematic) · 3</div>
+              <div class="opt hl"><span class="grow"><b>dematic/dwe/</b>workflow-ui <span class="dim xs">· master</span></span><span class="badge">gitlab-work</span><kbd>↵</kbd></div>
+              <div class="opt"><span class="grow"><b>dematic/dwe/</b>workflow-api <span class="dim xs">· main</span></span><span class="badge">gitlab-work</span></div>
+              <div class="opt"><span class="grow"><b>dematic/dwe/</b>workstation-sim <span class="dim xs">· main</span></span><span class="badge">gitlab-work</span></div>
+              <div class="hd xs dim" style="border-top:1px solid var(--border);margin-top:4px">Or paste a full URL or owner/name and press ↵</div>
+            </div>
+          </div>
+          <div class="xs dim" style="margin-top:110px">Searches every configured provider. Filter with <span class="mono">provider:gitlab</span>.</div>
+        </div>
+
+        <div>
+          <h3 style="margin:0 0 8px 4px">Recent repositories</h3>
+          <div class="recent">
+            <a><span class="grow truncate">dematic/dwe/workflow-ui</span><span class="xs dim">today</span></a>
+            <a><span class="grow truncate">dematic/ait/dgu/ait-graphene-dwe</span><span class="xs dim">today</span></a>
+            <a><span class="grow truncate">dematic/dwe/workflow-api</span><span class="xs dim">3d ago</span></a>
+            <a><span class="grow truncate">jtumidanski/converge</span><span class="badge">github</span><span class="xs dim">1w ago</span></a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="note callout"><b>Root page changes.</b> Resume cards lead. Provider + repository input collapse into one typeahead across all providers; the 1,000-row repository table becomes "recent" plus search. Conflicted/failed sessions surface here instead of being silently listed as Ready.</div>
+</section>
+
+<!-- ===================== CREATE ===================== -->
+<section class="screen" data-screen="create">
+  <div class="topbar"><span class="brand">Converge</span><span class="crumbs"><span class="sep">/</span><span>gitlab-work</span><span class="sep">/</span><span class="cur">dematic/dwe/workflow-ui</span></span><span class="grow"></span><span class="btn ghost icon">☾</span></div>
+  <div class="page">
+    <div class="between" style="margin-bottom:18px">
+      <div><h1>dematic/dwe/workflow-ui</h1><div class="sub">Select the merged changes to review together. They are applied in merge order onto the base.</div></div>
+      <div class="row"><span class="xs muted">Base</span><span class="input select" style="width:170px"><span class="mono">master</span><span class="dim">▾</span></span></div>
+    </div>
+
+    <div class="filters" style="margin-bottom:12px">
+      <span class="input" style="width:300px"><span class="dim">⌕</span><span class="ph">Search number, title, author, ticket</span></span>
+      <span class="chip on">Eric.Bracey <span class="x">×</span></span>
+      <span class="chip">devbldSaaS</span>
+      <span class="vsep" style="height:20px"></span>
+      <span class="chip"><span class="switch on"></span> Hide dependency bots</span>
+      <span class="chip">Group by ticket</span>
+      <span class="grow"></span>
+      <span class="xs dim">17 of 29 merged in last 30 days</span>
+    </div>
+
+    <div class="card" style="overflow:hidden">
+      <table class="tbl">
+        <thead><tr><th style="width:36px"><span class="cb mixed">–</span></th><th style="width:70px">#</th><th>Title</th><th style="width:140px">Author</th><th style="width:110px">Merged</th><th style="width:110px">Source</th></tr></thead>
+        <tbody>
+          <tr class="group"><td colspan="6"><span class="row"><span class="badge key">DWE-5651</span><span>4 changes</span><span class="grow"></span><span class="btn ghost sm">Select all 4</span></span></td></tr>
+          <tr class="sel"><td><span class="cb on">✓</span></td><td class="mono">#1062</td><td>warning fix causes an issue</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="muted xs">Sep 9, 14:02</td><td class="mono xs muted truncate">DWE-5651</td></tr>
+          <tr class="sel"><td><span class="cb on">✓</span></td><td class="mono">#1061</td><td>warning fix</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="muted xs">Sep 9, 11:40</td><td class="mono xs muted truncate">DWE-5651</td></tr>
+          <tr class="sel"><td><span class="cb on">✓</span></td><td class="mono">#1060</td><td>restored method</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="muted xs">Sep 9, 10:15</td><td class="mono xs muted truncate">DWE-5651</td></tr>
+          <tr class="sel"><td><span class="cb on">✓</span></td><td class="mono">#1059</td><td>timing fixes</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="muted xs">Sep 9, 09:02</td><td class="mono xs muted truncate">DWE-5651</td></tr>
+          <tr class="group"><td colspan="6"><span class="row"><span class="badge key">DWE-5689</span><span>3 changes</span><span class="grow"></span><span class="btn ghost sm">Select all 3</span></span></td></tr>
+          <tr><td><span class="cb"></span></td><td class="mono">#1056</td><td>operator can be chosen from dropdown</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="muted xs">Sep 8</td><td class="mono xs muted truncate">DWE-5689</td></tr>
+          <tr><td><span class="cb"></span></td><td class="mono">#1042</td><td>workstation site edge cases</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="muted xs">Sep 4</td><td class="mono xs muted truncate">DWE-5689</td></tr>
+          <tr><td><span class="cb"></span></td><td class="mono">#1036</td><td>No operators found warning not displayed</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="muted xs">Sep 2</td><td class="mono xs muted truncate">DWE-5689</td></tr>
+          <tr class="group"><td colspan="6"><span class="row"><span class="badge key">DWE-5690</span><span>1 change</span></span></td></tr>
+          <tr><td><span class="cb"></span></td><td class="mono">#1055</td><td>switching sites on workstation screen when invalid workstation is up</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="muted xs">Sep 8</td><td class="mono xs muted truncate">DWE-5690</td></tr>
+          <tr class="group"><td colspan="6"><span class="row"><span class="badge key">DWE-5649</span><span>2 changes</span><span class="grow"></span><span class="btn ghost sm">Select all 2</span></span></td></tr>
+          <tr><td><span class="cb"></span></td><td class="mono">#1046</td><td>default locale to en_US</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="muted xs">Sep 4</td><td class="mono xs muted truncate">DWE-5649</td></tr>
+          <tr><td><span class="cb"></span></td><td class="mono">#1045</td><td>cleaning up translations</td><td class="row"><span class="avatar">EB</span>Eric.Bracey</td><td class="muted xs">Sep 4</td><td class="mono xs muted truncate">DWE-5649</td></tr>
+          <tr class="group"><td colspan="6"><span class="row"><span class="badge">No ticket</span><span>12 changes hidden by "Hide dependency bots"</span><span class="grow"></span><span class="btn ghost sm">Show</span></span></td></tr>
+        </tbody>
+      </table>
+      <div class="between" style="padding:10px 12px"><span class="xs dim">Showing merged changes into <span class="mono">master</span></span><div class="row"><span class="btn sm" disabled>← Newer</span><span class="xs muted">Page 1</span><span class="btn sm">Older →</span></div></div>
+    </div>
+
+    <div class="selbar">
+      <div class="between">
+        <div class="row"><b>4 selected</b><span class="muted xs">· applied oldest → newest</span></div>
+        <div class="row"><span class="btn ghost sm">Clear</span><span class="btn primary">Build review <kbd style="color:inherit;border-color:rgba(0,0,0,.2)">↵</kbd></span></div>
+      </div>
+      <div class="selchips">
+        <span class="chip">1 · #1059 timing fixes <span class="x">×</span></span>
+        <span class="chip">2 · #1060 restored method <span class="x">×</span></span>
+        <span class="chip">3 · #1061 warning fix <span class="x">×</span></span>
+        <span class="chip">4 · #1062 warning fix causes an issue <span class="x">×</span></span>
+      </div>
+    </div>
+  </div>
+  <div class="note callout"><b>Creation changes.</b> Rows group by ticket key parsed from the title so a whole feature is one click. Author chips and a bot toggle replace scanning 25 rows. The selection bar shows the landing order and the base is a branch picker, not free text.</div>
+</section>
+
+<!-- ===================== REVIEW ===================== -->
+<section class="screen" data-screen="review">
+  <div class="topbar"><span class="brand">Converge</span><span class="crumbs"><span class="sep">/</span><span>dematic/ait/dgu/ait-graphene-dwe</span><span class="sep">/</span><span class="cur">Review</span></span><span class="grow"></span><span class="btn ghost icon">☾</span></div>
+  <div class="page wide">
+    <div class="subhead">
+      <span class="badge ok"><span class="dot ok"></span> Ready</span>
+      <span class="row" style="gap:6px"><span class="badge key">DWE-5651</span><span class="badge solid">#80</span><span class="badge solid">#81</span><span class="badge solid">#82</span><span class="btn ghost sm">details ▾</span></span>
+      <span class="vsep" style="height:20px"></span>
+      <span class="xs muted">Base <span class="mono">main @ 6140736</span> · immediately before #80</span>
+      <span class="grow"></span>
+      <span class="xs muted">6 files · <span class="plus">+94</span> <span class="minus">−119</span></span>
+      <span class="row" style="gap:6px"><span class="progress" style="width:90px"><i style="width:33%"></i></span><span class="xs muted">2 / 6 viewed</span></span>
+      <span class="btn">Unified ▾</span>
+      <span class="btn primary">Finish review</span>
+    </div>
+    <div class="layout">
+      <aside class="tree">
+        <div class="input sm" style="height:30px;margin:0 0 8px"><span class="dim">⌕</span><span class="ph">Filter files</span></div>
+        <div class="dir">▾ src/main/java/com/dematic/ait/dgu/<b style="color:var(--foreground)">common</b></div>
+        <div class="f on"><span class="cb on">✓</span><span class="st m">M</span><span class="grow truncate">DweBaseTest.java</span><span class="xs"><span class="plus">+11</span> <span class="minus">−1</span></span></div>
+        <div class="f"><span class="cb on">✓</span><span class="st m">M</span><span class="grow truncate">WorkstationBaseTest.java</span><span class="xs"><span class="plus">+42</span> <span class="minus">−27</span></span></div>
+        <div class="dir">▾ …/dgu/<b style="color:var(--foreground)">screens</b></div>
+        <div class="f"><span class="cb"></span><span class="st m">M</span><span class="grow truncate">WorkstationConnectTest.java</span><span class="xs"><span class="plus">+13</span> <span class="minus">−12</span></span></div>
+        <div class="f"><span class="cb"></span><span class="st m">M</span><span class="grow truncate">WorkstationDeepLinkTest.java</span><span class="xs"><span class="plus">+1</span> <span class="minus">−1</span></span></div>
+        <div class="f"><span class="cb"></span><span class="st m">M</span><span class="grow truncate">WorkstationLogoffStateTest.java</span><span class="xs"><span class="plus">+0</span> <span class="minus">−37</span></span></div>
+        <div class="f"><span class="cb"></span><span class="st m">M</span><span class="grow truncate">WorkstationSiteTest.java</span><span class="xs"><span class="plus">+27</span> <span class="minus">−41</span></span></div>
+        <div class="sep" style="margin:10px 0"></div>
+        <div class="xs dim" style="padding:0 8px"><kbd>j</kbd> <kbd>k</kbd> next / prev file · <kbd>v</kbd> mark viewed</div>
+      </aside>
+      <main class="pane">
+        <div class="filehead">
+          <span class="st m">M</span>
+          <span class="mono grow truncate">src/main/java/com/dematic/ait/dgu/common/<b>DweBaseTest.java</b></span>
+          <span class="xs"><span class="plus">+11</span> <span class="minus">−1</span></span>
+          <span class="btn ghost sm">Copy path</span>
+          <span class="btn ghost sm">Open in GitLab ↗</span>
+          <span class="btn sm"><span class="cb on">✓</span> Viewed</span>
+        </div>
+        <div class="fold">⤒ Expand 18 unmodified lines</div>
+        <div class="diff">
+          <div class="ln"><span>19</span><span>19</span><span><span class="kw">import</span> java.net.URL;</span></div>
+          <div class="ln"><span>20</span><span>20</span><span><span class="kw">import</span> java.net.URLEncoder;</span></div>
+          <div class="ln"><span>21</span><span>21</span><span><span class="kw">import</span> java.nio.charset.StandardCharsets;</span></div>
+          <div class="ln del"><span>22</span><span></span><span><span class="kw">import</span> java.util.<span class="wordd">*</span>;</span></div>
+          <div class="ln add"><span></span><span>22</span><span><span class="kw">import</span> java.util.<span class="word">ArrayList</span>;</span></div>
+          <div class="ln add"><span></span><span>23</span><span><span class="kw">import</span> java.util.HashMap;</span></div>
+          <div class="ln add"><span></span><span>24</span><span><span class="kw">import</span> java.util.LinkedList;</span></div>
+          <div class="ln add"><span></span><span>25</span><span><span class="kw">import</span> java.util.List;</span></div>
+          <div class="ln add"><span></span><span>26</span><span><span class="kw">import</span> java.util.Map;</span></div>
+          <div class="ln add"><span></span><span>27</span><span><span class="kw">import</span> java.util.Objects;</span></div>
+          <div class="ln add"><span></span><span>28</span><span><span class="kw">import</span> java.util.Scanner;</span></div>
+          <div class="ln add"><span></span><span>29</span><span><span class="kw">import</span> java.util.Set;</span></div>
+          <div class="ln add"><span></span><span>30</span><span><span class="kw">import</span> java.util.UUID;</span></div>
+          <div class="ln add"><span></span><span>31</span><span><span class="kw">import</span> java.util.Arrays;</span></div>
+          <div class="ln add"><span></span><span>32</span><span><span class="kw">import</span> java.util.Collections;</span></div>
+          <div class="ln"><span>23</span><span>33</span><span><span class="kw">import</span> java.util.concurrent.TimeUnit;</span></div>
+          <div class="ln"><span>24</span><span>34</span><span></span></div>
+          <div class="ln"><span>25</span><span>35</span><span><span class="kw">import</span> lombok.Getter;</span></div>
+        </div>
+        <div class="fold">⤓ Expand 212 unmodified lines</div>
+        <div class="filefoot">
+          <span class="xs dim">File 1 of 6</span>
+          <span class="btn">Next file: WorkstationBaseTest.java →</span>
+        </div>
+      </main>
+    </div>
+  </div>
+  <div class="note callout"><b>Review changes.</b> Header collapses to one status line with progress. The file tree is a real tree with per-file viewed checkboxes and status letters. The diff gets a sticky file header, expandable context, word-level highlighting, and next-file navigation so a reviewer never returns to the sidebar.</div>
+</section>
+
+<div class="harness"><a data-screen="root">1 · Root</a><a data-screen="create">2 · Create</a><a data-screen="review">3 · Review</a><a class="home" href="index.html">All mockups</a></div>
+<script src="mock.js"></script>
+</body></html>
