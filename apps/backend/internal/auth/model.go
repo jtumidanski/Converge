@@ -181,6 +181,34 @@ type UserProvider struct {
 	updatedAt       time.Time
 }
 
+// NewUserProvider validates the slug and returns the config value. The token
+// is accepted only pre-sealed (ciphertext plus nonce plus masked tail):
+// NewUserProvider never encrypts, so the caller controls when that happens
+// relative to any open transaction, matching NewUser's discipline for
+// Argon2id.
+func NewUserProvider(id, userID, slug, displayName string, kind config.Kind, baseURL string, tokenCiphertext, tokenNonce []byte, tokenLast4 string, now time.Time) (UserProvider, error) {
+	if err := ValidateSlug(slug); err != nil {
+		return UserProvider{}, err
+	}
+	if id == "" || userID == "" || displayName == "" || baseURL == "" || len(tokenCiphertext) == 0 || len(tokenNonce) == 0 {
+		return UserProvider{}, fmt.Errorf("auth: user provider requires id, user id, display name, base url, and a sealed token")
+	}
+	return UserProvider{
+		id:              id,
+		userID:          userID,
+		slug:            slug,
+		displayName:     displayName,
+		kind:            kind,
+		baseURL:         baseURL,
+		tokenCiphertext: append([]byte(nil), tokenCiphertext...),
+		tokenNonce:      append([]byte(nil), tokenNonce...),
+		tokenLast4:      tokenLast4,
+		tokenSetAt:      now,
+		createdAt:       now,
+		updatedAt:       now,
+	}, nil
+}
+
 func (p UserProvider) ID() string          { return p.id }
 func (p UserProvider) UserID() string      { return p.userID }
 func (p UserProvider) Slug() string        { return p.slug }
