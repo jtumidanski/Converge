@@ -20,7 +20,17 @@ async function toApiError(response: Response): Promise<ApiError> {
 }
 
 /**
- * onUnauthorized is invoked when any request answers 401.
+ * onUnauthorized is invoked when a response means the session is gone —
+ * never merely "a request returned 401". A 401 covers two distinct backend
+ * conditions carrying different error codes: UNAUTHENTICATED (the session
+ * cookie is missing, unknown, or expired — the session really is dead) and
+ * INVALID_CREDENTIALS (the password just supplied was rejected — e.g. on
+ * Account Settings' change-password or delete-account forms, from a fully
+ * signed-in user with a perfectly valid session). Only the former should
+ * fire this handler; firing it on INVALID_CREDENTIALS would spuriously log
+ * out a signed-in user who mistyped their current password. A 401 with an
+ * absent or unrecognised code is treated as UNAUTHENTICATED and fires the
+ * handler, since a dead session must never go unnoticed.
  *
  * A module-level callback rather than a thrown-and-caught event keeps this
  * file free of React and router imports, preserving its shape as a thin fetch
@@ -44,7 +54,7 @@ async function request(path: string, init: RequestInit): Promise<Response> {
   });
   if (!response.ok) {
     const error = await toApiError(response);
-    if (response.status === 401) {
+    if (response.status === 401 && error.code !== "INVALID_CREDENTIALS") {
       onUnauthorized?.();
     }
     throw error;

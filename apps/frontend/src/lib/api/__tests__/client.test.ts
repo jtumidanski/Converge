@@ -138,6 +138,56 @@ describe("api client", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it("invokes the unauthorized handler on a 401 carrying UNAUTHENTICATED", async () => {
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+    server.use(
+      http.get("/api/session-dead", () =>
+        HttpResponse.json(errorDoc(401, "UNAUTHENTICATED", "Not signed in"), { status: 401 }),
+      ),
+    );
+    const error = (await apiGet("/api/session-dead").catch((e: unknown) => e)) as ApiError;
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(401);
+  });
+
+  it("does not invoke the unauthorized handler on a 401 carrying INVALID_CREDENTIALS", async () => {
+    // A signed-in user with a perfectly valid session can get a 401 here —
+    // e.g. mistyping their current password on change-password or
+    // delete-account. That must not look like a dead session.
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+    server.use(
+      http.post("/api/auth/password", () =>
+        HttpResponse.json(
+          errorDoc(401, "INVALID_CREDENTIALS", "The current password is incorrect."),
+          { status: 401 },
+        ),
+      ),
+    );
+    const error = (await apiPost("/api/auth/password", {}).catch((e: unknown) => e)) as ApiError;
+    expect(handler).not.toHaveBeenCalled();
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(401);
+    expect(error.code).toBe("INVALID_CREDENTIALS");
+  });
+
+  it("invokes the unauthorized handler on a 401 with no recognisable error code", async () => {
+    // A dead session must never go unnoticed, so an absent/unrecognised
+    // code on a 401 is treated the same as UNAUTHENTICATED.
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+    server.use(
+      http.get("/api/opaque-401", () => new HttpResponse("<html>401</html>", { status: 401 })),
+    );
+    const error = (await apiGet("/api/opaque-401").catch((e: unknown) => e)) as ApiError;
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(401);
+    expect(error.code).toBe("UNKNOWN");
+  });
+
   it("apiPatch sends the JSON:API content type", async () => {
     let seenMethod = "";
     let seenContentType = "";
