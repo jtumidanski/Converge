@@ -106,6 +106,20 @@ func (r *ExecRunner) timeoutFor(s Spec) time.Duration {
 	return r.opts.CommandTimeout
 }
 
+// secretsFor is the union of the runner-wide secrets and the ones this
+// invocation declared. Both lists must be applied: the runner-wide list is the
+// only place environment-configured tokens and the master key appear, and the
+// spec-scoped list is the only place a per-user hosted token can appear.
+func (r *ExecRunner) secretsFor(s Spec) []string {
+	if len(s.Secrets) == 0 {
+		return r.opts.Secrets
+	}
+	out := make([]string, 0, len(r.opts.Secrets)+len(s.Secrets))
+	out = append(out, r.opts.Secrets...)
+	out = append(out, s.Secrets...)
+	return out
+}
+
 // Run executes git with the fixed -c prefix and isolated environment.
 func (r *ExecRunner) Run(ctx context.Context, s Spec) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.timeoutFor(s))
@@ -173,7 +187,7 @@ func (r *ExecRunner) Run(ctx context.Context, s Spec) (Result, error) {
 			if len(stderrLog) > stderrLogCap {
 				stderrLog = stderrLog[:stderrLogCap]
 			}
-			r.log.Debug("git exited non-zero", append(attrs, slog.String("outcome", "exit"), slog.String("stderr", string(Redact(stderrLog, r.opts.Secrets))))...)
+			r.log.Debug("git exited non-zero", append(attrs, slog.String("outcome", "exit"), slog.String("stderr", string(Redact(stderrLog, r.secretsFor(s)))))...)
 			return res, &ExitError{Category: s.Category, Result: res}
 		}
 		r.log.Error("git failed to start", append(attrs, slog.String("outcome", "error"))...)

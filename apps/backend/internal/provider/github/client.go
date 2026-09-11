@@ -186,6 +186,12 @@ func (c *Client) AuthorizeGit(repo provider.Repository, spec *gitx.Spec) error {
 		return err
 	}
 	spec.Env = append(spec.Env, env...)
+	// Declare the token for this invocation's stderr redaction. In hosted mode
+	// the token is per user and decrypted per request, so it is not in the
+	// shared runner's Options.Secrets and nothing else would scrub it. (The
+	// base64 Basic form built above is covered separately by Redact's
+	// Authorization-header rule.)
+	spec.Secrets = append(spec.Secrets, c.token.Reveal())
 	return nil
 }
 

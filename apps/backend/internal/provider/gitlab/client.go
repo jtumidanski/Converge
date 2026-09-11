@@ -235,6 +235,10 @@ func (c *Client) AuthorizeGit(repo provider.Repository, spec *gitx.Spec) error {
 		return err
 	}
 	spec.Env = append(spec.Env, env...)
+	// Declare the token for this invocation's stderr redaction; see the
+	// matching note in the GitHub client. A hosted per-user token is unknown
+	// to the shared runner's Options.Secrets.
+	spec.Secrets = append(spec.Secrets, c.token.Reveal())
 	return nil
 }
 

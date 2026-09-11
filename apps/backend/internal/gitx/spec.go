@@ -31,6 +31,14 @@ type Spec struct {
 	Timeout  time.Duration
 	Repo     string
 	Session  string
+	// Secrets are values scrubbed from this invocation's logged stderr, on
+	// top of the runner-wide Options.Secrets. Options.Secrets is fixed when
+	// the single shared runner is built and can therefore only ever hold
+	// environment-configured credentials; a per-user credential (hosted mode
+	// keeps provider tokens per user, encrypted in the database) is known
+	// only to the caller that authorises this one invocation, so it declares
+	// it here. Never logged, never serialised, never passed to git.
+	Secrets []string
 }
 
 // Result is the captured outcome of an invocation.
