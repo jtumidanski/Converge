@@ -100,7 +100,7 @@ func (r *Resolver) Resolve(ctx context.Context, p provider.GitProvider, repo pro
 	// check cannot be pushed earlier than this: it needs to lose to
 	// BASE_UNDETERMINED specifically when the base branch itself is absent.
 	report(session.StageUpdatingRepo)
-	mirrorPath, err := r.mirrors.Ensure(ctx, p, repo)
+	mirrorPath, err := r.mirrors.Ensure(ctx, mirror.RootNamespace(), p, repo)
 	if err != nil {
 		if re := MapProviderError(p.ID(), repo.FullName(), err); re != nil {
 			return Resolved{}, re
@@ -207,7 +207,7 @@ func (r *Resolver) landingWithFetch(ctx context.Context, p provider.GitProvider,
 		return landing, err
 	}
 	for _, sha := range cr.LandingCandidates() {
-		if fetchErr := r.mirrors.FetchSHA(ctx, p, repo, sha); fetchErr != nil {
+		if fetchErr := r.mirrors.FetchSHA(ctx, mirror.RootNamespace(), p, repo, sha); fetchErr != nil {
 			r.log.Debug("fetch-by-sha failed", slog.String("repository", repo.FullName()), slog.String("sha", shortSHA(sha)))
 			continue
 		}

@@ -284,7 +284,7 @@ func TestResolveRejectsNotMergedBeforeFetchingMirror(t *testing.T) {
 		t.Fatalf("err = %v, want NOT_MERGED", err)
 	}
 
-	mirrorPath, err := cache.Path(p.ID(), repo.FullName())
+	mirrorPath, err := cache.Path(mirror.RootNamespace(), p.ID(), repo.FullName())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +485,7 @@ func TestLandingWithFetchRetriesAndSucceeds(t *testing.T) {
 	p.AddChange(cr)
 
 	r := NewResolver(cache, testLog())
-	mirrorPath, err := r.mirrors.Ensure(context.Background(), p, repo)
+	mirrorPath, err := r.mirrors.Ensure(context.Background(), mirror.RootNamespace(), p, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +522,7 @@ func TestLandingWithFetchAbsorbsFetchFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mirrorPath, err := f.resolver.mirrors.Ensure(context.Background(), f.prov, f.repo)
+	mirrorPath, err := f.resolver.mirrors.Ensure(context.Background(), mirror.RootNamespace(), f.prov, f.repo)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -26,7 +26,7 @@ func TestObjectReader(t *testing.T) {
 	}
 	defer runner.Close()
 	cache := New(t.TempDir(), runner, &gitx.LockMap{}, testLogger())
-	path, err := cache.Ensure(context.Background(), fake.New("fake", provider.KindGitLab), repoFor(t, "fake", src.CloneURL()))
+	path, err := cache.Ensure(context.Background(), RootNamespace(), fake.New("fake", provider.KindGitLab), repoFor(t, "fake", src.CloneURL()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestExistsAbsentObjectReturnsFalseNoError(t *testing.T) {
 	}
 	defer runner.Close()
 	cache := New(t.TempDir(), runner, &gitx.LockMap{}, testLogger())
-	path, err := cache.Ensure(context.Background(), fake.New("fake", provider.KindGitLab), repoFor(t, "fake", src.CloneURL()))
+	path, err := cache.Ensure(context.Background(), RootNamespace(), fake.New("fake", provider.KindGitLab), repoFor(t, "fake", src.CloneURL()))
 	if err != nil {
 		t.Fatal(err)
 	}

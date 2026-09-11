@@ -34,7 +34,7 @@ func TestCreateCleanupRealGit(t *testing.T) {
 	locks := &gitx.LockMap{}
 	cache := mirror.New(t.TempDir(), runner, locks, logger())
 	repo, _ := provider.NewRepositoryBuilder().SetProviderID("fake").SetFullName("a/b").SetDefaultBranch("main").SetCloneURL(src.CloneURL()).Build()
-	mirrorPath, err := cache.Ensure(context.Background(), fake.New("fake", provider.KindGitLab), repo)
+	mirrorPath, err := cache.Ensure(context.Background(), mirror.RootNamespace(), fake.New("fake", provider.KindGitLab), repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestNewResolvesSymlinkedRoot(t *testing.T) {
 	locks := &gitx.LockMap{}
 	cache := mirror.New(t.TempDir(), runner, locks, logger())
 	repo, _ := provider.NewRepositoryBuilder().SetProviderID("fake").SetFullName("a/b").SetDefaultBranch("main").SetCloneURL(src.CloneURL()).Build()
-	mirrorPath, merr := cache.Ensure(context.Background(), fake.New("fake", provider.KindGitLab), repo)
+	mirrorPath, merr := cache.Ensure(context.Background(), mirror.RootNamespace(), fake.New("fake", provider.KindGitLab), repo)
 	if merr != nil {
 		t.Fatal(merr)
 	}

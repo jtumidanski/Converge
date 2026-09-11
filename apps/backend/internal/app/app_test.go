@@ -15,6 +15,7 @@ import (
 
 	"github.com/jtumidanski/converge/internal/config"
 	"github.com/jtumidanski/converge/internal/identity"
+	"github.com/jtumidanski/converge/internal/mirror"
 	"github.com/jtumidanski/converge/internal/session"
 )
 
@@ -320,7 +321,7 @@ func TestNewWiresRepositoryCacheRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	got, err := a.Mirrors.Path("gh", "owner/repo")
+	got, err := a.Mirrors.Path(mirror.RootNamespace(), "gh", "owner/repo")
 	if err != nil {
 		t.Fatal(err)
 	}

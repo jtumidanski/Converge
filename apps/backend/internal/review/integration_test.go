@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/jtumidanski/converge/internal/gitx"
+	"github.com/jtumidanski/converge/internal/mirror"
 	"github.com/jtumidanski/converge/internal/session"
 )
 
@@ -309,7 +310,7 @@ func TestIntegrationCleanupLeavesMirrorUsable(t *testing.T) {
 	if _, err := os.Stat(h.workspaces.SessionDir(got.ID())); !os.IsNotExist(err) {
 		t.Error("session dir remains")
 	}
-	mirrorPath, err := h.mirrors.Path("fake", "atlas/server")
+	mirrorPath, err := h.mirrors.Path(mirror.RootNamespace(), "fake", "atlas/server")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +364,7 @@ func TestIntegrationConcurrentBuildsShareOneMirror(t *testing.T) {
 			t.Errorf("build %d: status=%s err=%+v", i+1, r.Status(), r.Error())
 		}
 	}
-	mirrorPath, _ := h.mirrors.Path("fake", "atlas/server")
+	mirrorPath, _ := h.mirrors.Path(mirror.RootNamespace(), "fake", "atlas/server")
 	if _, err := h.runner.Run(context.Background(), gitx.Spec{Dir: mirrorPath, Args: []string{"fsck", "--no-progress"}, Category: gitx.CategoryQuery}); err != nil {
 		t.Fatalf("mirror corrupted by concurrent builds: %v", err)
 	}
@@ -381,7 +382,7 @@ func TestIntegrationNoTokenLeaksIntoMirrorRemote(t *testing.T) {
 	if got.Status() != session.StatusReady {
 		t.Fatalf("status=%s", got.Status())
 	}
-	mirrorPath, _ := h.mirrors.Path("fake", "atlas/server")
+	mirrorPath, _ := h.mirrors.Path(mirror.RootNamespace(), "fake", "atlas/server")
 	res, err := h.runner.Run(context.Background(), gitx.Spec{Dir: mirrorPath, Args: []string{"remote", "get-url", "origin"}, Category: gitx.CategoryQuery})
 	if err != nil {
 		t.Fatal(err)
