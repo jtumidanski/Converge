@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -30,6 +31,18 @@ const (
 	argonKeyLen  uint32 = 32
 	argonSaltLen        = 16
 	argonVersion        = argon2.Version // 19
+)
+
+// Ceilings on the Argon2 cost parameters decodePHC will accept from a stored
+// hash. These exist to fail closed on a corrupt or tampered row — not to
+// constrain legitimate hashes, which are always written at the constants
+// above. Without a ceiling, a stored m= large enough drives a multi-terabyte
+// allocation (an unrecoverable Go runtime OOM) and a large t= hangs the
+// verifying goroutine indefinitely.
+const (
+	maxArgonMemory  uint32 = 1 << 20 // KiB (1 GiB); 16x the production 65536 KiB
+	maxArgonTime    uint32 = 16      // 16x the production value of 1
+	maxArgonThreads uint8  = 16      // 4x the production value of 4
 )
 
 // ErrPasswordMismatch reports a correct encoding that does not match the
@@ -106,14 +119,29 @@ func decodePHC(encoded string) (phcParams, []byte, []byte, error) {
 	if version != argonVersion {
 		return phcParams{}, nil, nil, fmt.Errorf("auth: unsupported argon2 version %d", version)
 	}
-	var memory, timeCost uint32
-	var threads uint8
-	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &timeCost, &threads); err != nil {
-		return phcParams{}, nil, nil, fmt.Errorf("auth: malformed password hash parameters: %w", err)
+	fields := strings.Split(parts[3], ",")
+	if len(fields) != 3 {
+		return phcParams{}, nil, nil, errors.New("auth: malformed password hash parameters")
 	}
-	if memory == 0 || timeCost == 0 || threads == 0 {
+	memory, err := parsePHCUint(fields[0], "m")
+	if err != nil {
+		return phcParams{}, nil, nil, err
+	}
+	timeCost, err := parsePHCUint(fields[1], "t")
+	if err != nil {
+		return phcParams{}, nil, nil, err
+	}
+	threadsVal, err := parsePHCUint(fields[2], "p")
+	if err != nil {
+		return phcParams{}, nil, nil, err
+	}
+	if memory == 0 || timeCost == 0 || threadsVal == 0 {
 		return phcParams{}, nil, nil, errors.New("auth: password hash parameters must be positive")
 	}
+	if memory > uint64(maxArgonMemory) || timeCost > uint64(maxArgonTime) || threadsVal > uint64(maxArgonThreads) {
+		return phcParams{}, nil, nil, errors.New("auth: malformed password hash parameters")
+	}
+	threads := uint8(threadsVal) //nolint:gosec // G115: threadsVal is bounds-checked against maxArgonThreads (16) above
 	enc := base64.RawStdEncoding
 	salt, err := enc.DecodeString(parts[4])
 	if err != nil {
@@ -123,10 +151,30 @@ func decodePHC(encoded string) (phcParams, []byte, []byte, error) {
 	if err != nil {
 		return phcParams{}, nil, nil, fmt.Errorf("auth: malformed password hash key: %w", err)
 	}
-	if len(salt) == 0 || len(key) == 0 {
-		return phcParams{}, nil, nil, errors.New("auth: password hash salt and key must be non-empty")
+	if len(salt) != argonSaltLen {
+		return phcParams{}, nil, nil, errors.New("auth: malformed password hash salt")
 	}
-	return phcParams{memory: memory, time: timeCost, threads: threads}, salt, key, nil
+	if len(key) != int(argonKeyLen) {
+		return phcParams{}, nil, nil, errors.New("auth: malformed password hash key")
+	}
+	//nolint:gosec // G115: memory and timeCost are bounds-checked against maxArgonMemory/maxArgonTime above
+	return phcParams{memory: uint32(memory), time: uint32(timeCost), threads: threads}, salt, key, nil
+}
+
+// parsePHCUint parses a single "prefix=NNN" PHC parameter field. It rejects
+// anything strconv.ParseUint would not accept as a whole string, so trailing
+// garbage after the digits (e.g. "p=4XYZ") is a malformed encoding rather
+// than a silently truncated value.
+func parsePHCUint(field, prefix string) (uint64, error) {
+	rest, ok := strings.CutPrefix(field, prefix+"=")
+	if !ok {
+		return 0, fmt.Errorf("auth: malformed password hash parameters")
+	}
+	v, err := strconv.ParseUint(rest, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("auth: malformed password hash parameters: %w", err)
+	}
+	return v, nil
 }
 
 // dummyHash equalises Login's cost between an unknown username and a wrong

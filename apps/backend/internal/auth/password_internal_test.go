@@ -1,6 +1,9 @@
 package auth
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // TestDummyHashNeverMatchesAnyPassword proves the FR-2.5 timing fixture is a
 // well-formed Argon2id encoding (so Login's verify against it costs the same
@@ -9,7 +12,7 @@ import "testing"
 func TestDummyHashNeverMatchesAnyPassword(t *testing.T) {
 	t.Parallel()
 	for _, candidate := range []string{"", "password", "correct horse battery staple"} {
-		if err := VerifyPassword(dummyHash, candidate); err != ErrPasswordMismatch { //nolint:errorlint // exact sentinel expected, no wrapping involved
+		if err := VerifyPassword(dummyHash, candidate); !errors.Is(err, ErrPasswordMismatch) {
 			t.Fatalf("VerifyPassword(dummyHash, %q) = %v, want ErrPasswordMismatch", candidate, err)
 		}
 	}

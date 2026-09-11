@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 
@@ -100,15 +101,83 @@ func TestVerifyRejectsMalformedEncodings(t *testing.T) {
 	for _, bad := range []string{
 		"",
 		"not-a-phc-string",
-		"$argon2i$v=19$m=65536,t=1,p=4$c2FsdA$a2V5",  // wrong variant
-		"$argon2id$v=18$m=65536,t=1,p=4$c2FsdA$a2V5", // wrong version
-		"$argon2id$v=19$m=x,t=1,p=4$c2FsdA$a2V5",     // non-numeric memory
-		"$argon2id$v=19$m=65536,t=1,p=4$!!!$a2V5",    // bad base64 salt
-		"$argon2id$v=19$m=65536,t=1,p=4$c2FsdA",      // too few fields
+		"$argon2i$v=19$m=65536,t=1,p=4$c2FsdA$a2V5",                                                            // wrong variant
+		"$argon2id$v=18$m=65536,t=1,p=4$c2FsdA$a2V5",                                                           // wrong version
+		"$argon2id$v=19$m=x,t=1,p=4$c2FsdA$a2V5",                                                               // non-numeric memory
+		"$argon2id$v=19$m=65536,t=1,p=4$!!!$a2V5",                                                              // bad base64 salt
+		"$argon2id$v=19$m=65536,t=1,p=4$c2FsdA",                                                                // too few fields
+		"$argon2id$v=19$m=65536,t=1,p=4XYZ$c2FsdHNhbHRzYWx0c2FsdA$a2V5a2V5a2V5a2V5a2V5a2V5a2V5a2V5a2V5a2V5a2U", // trailing garbage in parameter field, otherwise well-formed
+		"$argon2id$v=19$m=65536,t=1,p=4$c2FsdHNhbHRz$a2V5",                                                     // salt not 16 bytes
+		"$argon2id$v=19$m=65536,t=1,p=4$c2FsdHNhbHRzYWx0c2FsdA$a2V5oth",                                        // key not 32 bytes
 	} {
-		if err := auth.VerifyPassword(bad, "whatever"); err == nil {
+		// Every case here is structurally malformed and must be rejected by
+		// decodePHC itself, not merely produce a key/salt that fails the
+		// constant-time compare (subtle.ConstantTimeCompare already returns
+		// false for mismatched lengths, so a bare "err == nil" check here
+		// would not prove decodePHC enforces anything).
+		err := auth.VerifyPassword(bad, "whatever")
+		if err == nil {
 			t.Errorf("VerifyPassword(%q) = nil, want an error", bad)
+			continue
 		}
+		if errors.Is(err, auth.ErrPasswordMismatch) {
+			t.Errorf("VerifyPassword(%q) = %v (ErrPasswordMismatch); want decodePHC to reject it as malformed", bad, err)
+		}
+	}
+}
+
+// TestVerifyRejectsOversizedCostParameters proves decodePHC rejects Argon2
+// cost parameters above the ceilings before ever calling argon2.IDKey: a
+// corrupt or tampered stored hash with an enormous memory or time cost must
+// fail fast rather than driving a multi-terabyte allocation or hanging
+// indefinitely. Each case here uses a value one above the documented
+// ceiling, so if decodePHC ever called argon2.IDKey with it the test would
+// hang or OOM instead of returning promptly.
+func TestVerifyRejectsOversizedCostParameters(t *testing.T) {
+	t.Parallel()
+	const salt = "c2FsdHNhbHRzYWx0c2FsdA"                     // 16 raw bytes, base64
+	const key = "a2V5a2V5a2V5a2V5a2V5a2V5a2V5a2V5a2V5a2V5a2U" // 32 raw bytes, base64
+	for name, bad := range map[string]string{
+		"memory above ceiling":  fmt.Sprintf("$argon2id$v=19$m=%d,t=1,p=4$%s$%s", uint64(1<<20)+1, salt, key),
+		"time above ceiling":    fmt.Sprintf("$argon2id$v=19$m=65536,t=%d,p=4$%s$%s", 17, salt, key),
+		"threads above ceiling": fmt.Sprintf("$argon2id$v=19$m=65536,t=1,p=%d$%s$%s", 17, salt, key),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			done := make(chan error, 1)
+			go func() { done <- auth.VerifyPassword(bad, "whatever") }()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatalf("VerifyPassword(%q) = nil, want an error", bad)
+				}
+				// The key bytes above never match anything argon2.IDKey could
+				// produce, so if VerifyPassword actually hashed and compared,
+				// it would still return ErrPasswordMismatch. Rejection must
+				// instead come from decodePHC, which returns a distinct
+				// error, before argon2.IDKey is ever called.
+				if errors.Is(err, auth.ErrPasswordMismatch) {
+					t.Fatalf("VerifyPassword(%q) = %v (ErrPasswordMismatch); want decodePHC to reject before hashing", bad, err)
+				}
+			case <-time.After(200 * time.Millisecond):
+				t.Fatalf("VerifyPassword did not return within 200ms; the oversized parameter was not rejected before hashing")
+			}
+		})
+	}
+}
+
+// TestVerifyAcceptsHashAtTheCeilings proves the ceilings introduced to fail
+// closed on a corrupt row do not reject any hash HashPassword actually
+// produces.
+func TestVerifyAcceptsHashAtTheCeilings(t *testing.T) {
+	t.Parallel()
+	const pw = "correct horse battery staple"
+	encoded, err := auth.HashPassword(pw)
+	if err != nil {
+		t.Fatalf("HashPassword: %v", err)
+	}
+	if err := auth.VerifyPassword(encoded, pw); err != nil {
+		t.Fatalf("VerifyPassword rejected a hash produced by HashPassword: %v", err)
 	}
 }
 
