@@ -9,8 +9,8 @@ import { cn } from "@/lib/utils";
 import type { Review } from "@/types/models/review";
 
 const DOT: Record<string, string> = {
-  READY: "bg-green-500",
-  CREATING: "bg-amber-500",
+  READY: "bg-success",
+  CREATING: "bg-warning",
   CONFLICTED: "bg-destructive",
   FAILED: "bg-destructive",
 };

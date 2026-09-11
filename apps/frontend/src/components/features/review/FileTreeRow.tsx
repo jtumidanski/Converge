@@ -1,26 +1,9 @@
 import { Checkbox } from "@/components/ui/checkbox";
+import { STATUS_COLOR, STATUS_LETTER } from "@/components/features/review/fileStatus";
+import { baseName } from "@/lib/review/fileTree";
 import { cn } from "@/lib/utils";
 import { strings } from "@/lib/strings";
-import type { FileStatus, ReviewFile } from "@/types/models/reviewFile";
-
-const STATUS_LETTER: Record<FileStatus, string> = {
-  modified: "M",
-  added: "A",
-  deleted: "D",
-  renamed: "R",
-};
-
-const STATUS_COLOR: Record<FileStatus, string> = {
-  modified: "text-amber-500",
-  added: "text-green-500",
-  deleted: "text-destructive",
-  renamed: "text-blue-500",
-};
-
-function baseName(path: string): string {
-  const index = path.lastIndexOf("/");
-  return index === -1 ? path : path.slice(index + 1);
-}
+import type { ReviewFile } from "@/types/models/reviewFile";
 
 interface FileTreeRowProps {
   file: ReviewFile;

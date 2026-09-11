@@ -116,6 +116,30 @@ describe("ReviewsPage", () => {
     );
   });
 
+  it("closes the drawer when Cancel is clicked", async () => {
+    seed();
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /start a new review/i }));
+    await screen.findByRole("dialog", { name: /new review/i });
+    await userEvent.click(screen.getByRole("button", { name: strings.cancel }));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /new review/i })).not.toBeInTheDocument(),
+    );
+  });
+
+  it("closes the drawer when the scrim is clicked", async () => {
+    seed();
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /start a new review/i }));
+    await screen.findByRole("dialog", { name: /new review/i });
+    const scrim = document.querySelector('[data-slot="sheet-overlay"]');
+    expect(scrim).not.toBeNull();
+    await userEvent.click(scrim as Element);
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /new review/i })).not.toBeInTheDocument(),
+    );
+  });
+
   it("lists recent repositories first when the search is empty", async () => {
     recordRecent({
       provider: "gl",

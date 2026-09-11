@@ -8,10 +8,19 @@ import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import { ReviewPage } from "@/pages/ReviewPage";
 import { HttpResponse, http, listDoc, oneDoc, server } from "@/test/server";
 import { viewedKey } from "@/lib/storage/viewed";
+import { strings } from "@/lib/strings";
 import type { ReviewAttributes } from "@/types/models/review";
 
 vi.mock("@/components/features/review/FileDiff", () => ({
   FileDiff: () => <div data-testid="file-diff" />,
+}));
+
+// Toasts render in a portal owned by App, which these tests do not mount, so
+// capture the call instead of asserting on rendered DOM.
+const toastError = vi.fn();
+vi.mock("sonner", () => ({
+  toast: { error: (...args: unknown[]) => toastError(...args), success: vi.fn() },
+  Toaster: () => null,
 }));
 
 beforeAll(() => server.listen({ onUnhandledRequest: "bypass" }));
@@ -170,6 +179,26 @@ describe("ReviewPage (READY)", () => {
     await waitFor(() => expect(screen.getByText("File 2 of 2")).toBeInTheDocument());
   });
 
+  it("labels Next file with the bare filename, not the path (FR-36)", async () => {
+    seed();
+    // Two files in different directories with different basenames, so the
+    // assertion cannot pass by path and name happening to be equal.
+    server.use(
+      http.get("/api/reviews/:id/files", () =>
+        HttpResponse.json(
+          listDoc([reviewFile("src/main/app.ts"), reviewFile("src/lib/nested/helper.ts")]),
+        ),
+      ),
+    );
+    renderPage();
+    await screen.findByTestId("file-diff");
+    // Visible order is src/lib/nested/helper.ts then src/main/app.ts, so the
+    // first selection's next file is src/main/app.ts.
+    const next = await screen.findByRole("button", { name: /next file/i });
+    expect(next).toHaveAccessibleName(expect.stringContaining("app.ts"));
+    expect(next).toHaveAccessibleName(expect.not.stringContaining("src/main/app.ts"));
+  });
+
   it("moves between files with j and k", async () => {
     seed();
     renderPage();
@@ -219,6 +248,18 @@ describe("ReviewPage (READY)", () => {
     await waitFor(() => expect(deleted).toEqual(["rev-1"]));
     expect(localStorage.getItem(viewedKey("rev-1"))).toBeNull();
     expect(await screen.findByText("reviews page")).toBeInTheDocument();
+  });
+
+  it("reports a failed finish with the shared review-close copy", async () => {
+    seed();
+    // A transport failure carries no server-supplied message, so the toast
+    // must fall back to the page's own copy -- which is what this pins.
+    server.use(http.delete("/api/reviews/:id", () => HttpResponse.error()));
+    renderPage();
+    await screen.findByTestId("file-diff");
+    await userEvent.click(screen.getByRole("button", { name: /finish review/i }));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(strings.reviewDiscardFailed));
+    expect(screen.queryByText("reviews page")).not.toBeInTheDocument();
   });
 
   it("does not fire shortcuts while the Discard confirmation dialog is open", async () => {

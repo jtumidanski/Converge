@@ -109,11 +109,11 @@ describe("DiffPane", () => {
   });
 
   describe("status badge", () => {
-    it("displays 'M' in amber for modified files", () => {
+    it("displays 'M' in the warning colour for modified files", () => {
       renderPane({ fileDiff: diff("src/modified.ts") });
       const statusBadge = screen.getByText("M");
       expect(statusBadge).toBeInTheDocument();
-      expect(statusBadge).toHaveClass("text-amber-500");
+      expect(statusBadge).toHaveClass("text-warning");
     });
 
     it("displays 'D' in destructive for deleted files", () => {
@@ -138,7 +138,7 @@ describe("DiffPane", () => {
       expect(statusBadge).toHaveClass("text-destructive");
     });
 
-    it("displays 'A' in green for added files", () => {
+    it("displays 'A' in the success colour for added files", () => {
       renderPane({
         fileDiff: {
           type: "review-file-diffs",
@@ -157,10 +157,10 @@ describe("DiffPane", () => {
       });
       const statusBadge = screen.getByText("A");
       expect(statusBadge).toBeInTheDocument();
-      expect(statusBadge).toHaveClass("text-green-500");
+      expect(statusBadge).toHaveClass("text-success");
     });
 
-    it("displays 'R' in blue for renamed files", () => {
+    it("displays 'R' in the info colour for renamed files", () => {
       renderPane({
         fileDiff: {
           type: "review-file-diffs",
@@ -179,7 +179,7 @@ describe("DiffPane", () => {
       });
       const statusBadge = screen.getByText("R");
       expect(statusBadge).toBeInTheDocument();
-      expect(statusBadge).toHaveClass("text-blue-500");
+      expect(statusBadge).toHaveClass("text-info");
     });
   });
 });

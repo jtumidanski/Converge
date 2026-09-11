@@ -85,6 +85,9 @@ export const strings = {
   changesCount: (count: number) => `${count} changes`,
   changesHiddenBy: (count: number) => `${count} changes hidden by “${strings.hideDependencyBots}”`,
   couldNotLoadBranches: "Could not load branches",
+  // Kept title-cased: "Included PRs/MRs" is product vocabulary (FR-10.11), so
+  // it must not be lowercased to fit a sentence.
+  couldNotLoadIncludedChanges: "Could not load Included PRs/MRs",
   filterFilesPlaceholder: "Filter files",
   changedFiles: "Changed files",
   markFileViewed: (name: string) => `Mark ${name} viewed`,

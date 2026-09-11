@@ -23,7 +23,7 @@ import { useBreadcrumbs } from "@/lib/breadcrumbs/useBreadcrumbs";
 import { useHotkeys } from "@/lib/hotkeys/useHotkeys";
 import { useStore } from "@/lib/storage/store";
 import { clearViewed, toggleViewed, viewedStore } from "@/lib/storage/viewed";
-import { buildTree, flattenVisible } from "@/lib/review/fileTree";
+import { baseName, buildTree, flattenVisible } from "@/lib/review/fileTree";
 import { openInProviderHref } from "@/lib/review/providerLink";
 import { messageFor } from "@/lib/api/errors";
 import { strings } from "@/lib/strings";
@@ -123,7 +123,7 @@ export function ReviewPage() {
       clearViewed(id);
       navigate("/");
     } catch (error: unknown) {
-      toast.error(messageFor(error, "The review could not be closed."));
+      toast.error(messageFor(error, strings.reviewDiscardFailed));
     }
   }
 
@@ -217,7 +217,9 @@ export function ReviewPage() {
                 onToggleViewed={toggleSelectedViewed}
                 index={Math.max(index, 0)}
                 total={order.length}
-                nextName={nextPath}
+                // The footer shows the bare filename (FR-36); a full path would
+                // overrun the button on deep trees.
+                nextName={nextPath === undefined ? undefined : baseName(nextPath)}
                 isLast={isLast}
                 onNext={() => select(nextPath, "keyboard")}
               />

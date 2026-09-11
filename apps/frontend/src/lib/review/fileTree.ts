@@ -108,6 +108,15 @@ export function filterTree(nodes: TreeNode[], query: string): TreeNode[] {
   return keep(nodes);
 }
 
+/**
+ * baseName is the final segment of a file path -- what the tree rows and the
+ * footer's "Next file" label show, so a deep path does not swamp them.
+ */
+export function baseName(path: string): string {
+  const index = path.lastIndexOf("/");
+  return index === -1 ? path : path.slice(index + 1);
+}
+
 /** ancestorDirs lists every directory prefix of a file path, outermost first. */
 export function ancestorDirs(path: string): string[] {
   const segments = path.split("/");

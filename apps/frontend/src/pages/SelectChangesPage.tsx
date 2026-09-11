@@ -83,9 +83,11 @@ export function SelectChangesPage() {
   // BaseBranchSelect (Task 19) has no isError prop by design (Ruling 16): it
   // cannot distinguish a fetch failure from a genuinely empty branch list, so
   // it silently falls back to the pinned default plus a typed value either
-  // way. The create page owns surfacing the failure itself, via its own
-  // query against the same cache key BaseBranchSelect's closed-state query
-  // would use.
+  // way. The create page owns surfacing the failure itself, so it runs its own
+  // unsearched branches query eagerly on load. BaseBranchSelect's query is
+  // enabled only while the popover is open, so this is the only request until
+  // the user opens it; once open with an empty search the keys match and React
+  // Query serves it from this same cache entry.
   const branches = useBranches(
     providerId,
     repository,
@@ -256,7 +258,7 @@ export function SelectChangesPage() {
       ) : null}
       {changes.isError ? (
         <ErrorBanner
-          title={`Could not load ${strings.includedChanges.toLowerCase()}`}
+          title={strings.couldNotLoadIncludedChanges}
           detail={messageFor(changes.error, "Try again in a moment.")}
           onRetry={() => void changes.refetch()}
         />

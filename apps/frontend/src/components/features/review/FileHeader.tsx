@@ -1,23 +1,10 @@
 import { Check, Copy, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { STATUS_COLOR, STATUS_LETTER } from "@/components/features/review/fileStatus";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import type { FileStatus } from "@/types/models/reviewFile";
-
-const STATUS_LETTER: Record<FileStatus, string> = {
-  modified: "M",
-  added: "A",
-  deleted: "D",
-  renamed: "R",
-};
-
-const STATUS_COLOR: Record<FileStatus, string> = {
-  modified: "text-amber-500",
-  added: "text-green-500",
-  deleted: "text-destructive",
-  renamed: "text-blue-500",
-};
 
 interface FileHeaderProps {
   path: string;

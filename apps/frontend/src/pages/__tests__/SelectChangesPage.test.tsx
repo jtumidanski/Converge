@@ -255,6 +255,20 @@ describe("SelectChangesPage", () => {
     expect(await screen.findByText("Could not load branches")).toBeInTheDocument();
   });
 
+  it("names the Included PRs/MRs section with its product casing when the changes fetch fails", async () => {
+    seed();
+    server.use(
+      http.get("/api/providers/gl/repositories/:repo/changes", () =>
+        HttpResponse.json(
+          { errors: [{ status: "500", code: "PROVIDER_UNAVAILABLE", title: "Server Error" }] },
+          { status: 500 },
+        ),
+      ),
+    );
+    renderPage();
+    expect(await screen.findByText("Could not load Included PRs/MRs")).toBeInTheDocument();
+  });
+
   it("waits for the repository lookup to settle before requesting changes, and targets the default branch", async () => {
     seed();
     renderPage();
