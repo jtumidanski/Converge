@@ -16,9 +16,15 @@ export interface Store<T> {
  * contract lib/theme/storage.ts established; that module keeps its own copy
  * because of its boot-script coupling, which this abstraction must not disturb.
  *
- * The value is cached so `get()` is referentially stable between writes, which
- * useSyncExternalStore requires: re-parsing on every call would hand React a
- * new array identity each render and loop forever.
+ * The value is cached against the last-seen raw string so `get()` is
+ * referentially stable between calls: unless the underlying storage entry
+ * has actually changed, get() returns the same object identity, which
+ * useSyncExternalStore requires (re-parsing on every call would hand React a
+ * new array identity each render and loop forever). The raw comparison also
+ * means an out-of-band write -- another code path calling localStorage
+ * directly, or a test's localStorage.clear() -- is picked up on the next
+ * get() without needing a same-tab "storage" event, which browsers never fire
+ * for the document that made the change.
  */
 export function createStore<T>(
   key: string,
@@ -28,22 +34,36 @@ export function createStore<T>(
   const listeners = new Set<() => void>();
   let cache: T | undefined;
   let loaded = false;
-
-  function read(): T {
-    try {
-      const raw = localStorage.getItem(key);
-      if (raw === null) return fallback();
-      const parsed: unknown = JSON.parse(raw);
-      return isValid(parsed) ? parsed : fallback();
-    } catch {
-      return fallback();
-    }
-  }
+  let lastRaw: string | null | undefined;
 
   function get(): T {
-    if (!loaded) {
-      cache = read();
-      loaded = true;
+    let raw: string | null;
+    try {
+      raw = localStorage.getItem(key);
+    } catch {
+      // Storage unusable this call: serve what we have, or the fallback.
+      if (!loaded) {
+        cache = fallback();
+        loaded = true;
+      }
+      return cache as T;
+    }
+
+    if (loaded && raw === lastRaw) {
+      return cache as T;
+    }
+
+    lastRaw = raw;
+    loaded = true;
+    if (raw === null) {
+      cache = fallback();
+    } else {
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        cache = isValid(parsed) ? parsed : fallback();
+      } catch {
+        cache = fallback();
+      }
     }
     return cache as T;
   }
@@ -53,11 +73,18 @@ export function createStore<T>(
   }
 
   function set(next: T | ((prev: T) => T)): void {
-    const value = typeof next === "function" ? (next as (prev: T) => T)(get()) : next;
+    // get() primes lastRaw/cache from current storage before we overwrite it,
+    // so a write that fails below still leaves lastRaw matching the (unchanged)
+    // actual storage, and a later get() keeps serving this in-memory value
+    // instead of quietly reverting to whatever was on disk before.
+    const previous = get();
+    const value = typeof next === "function" ? (next as (prev: T) => T)(previous) : next;
     cache = value;
     loaded = true;
     try {
-      localStorage.setItem(key, JSON.stringify(value));
+      const json = JSON.stringify(value);
+      localStorage.setItem(key, json);
+      lastRaw = json;
     } catch {
       // Best effort: the session stays correct in memory and a failed write
       // must never break the interaction that triggered it.
