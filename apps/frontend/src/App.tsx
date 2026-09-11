@@ -3,9 +3,12 @@ import { BrowserRouter } from "react-router";
 import { Toaster } from "sonner";
 import { AppRoutes } from "@/routes";
 import { AppShell } from "@/components/layout/AppShell";
+import { AccountMenu } from "@/components/layout/AccountMenu";
+import { ModeGate } from "@/components/auth/ModeGate";
 import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import { createQueryClient } from "@/lib/query-client";
 import { useTheme } from "@/lib/theme/useTheme";
+import { useAuthMode } from "@/lib/hooks/api/useAuth";
 
 const queryClient = createQueryClient();
 
@@ -19,14 +22,30 @@ function ThemedToaster() {
   return <Toaster richColors position="top-right" theme={resolved} />;
 }
 
+/**
+ * ModeAwareApp reads the already-resolved mode (ModeGate fetched it, and
+ * useAuthMode's staleTime is Infinity, so this is a cache read, not a second
+ * request) to decide whether the shell gets an account menu and whether the
+ * routes are guarded.
+ */
+function ModeAwareApp() {
+  const { data } = useAuthMode();
+  const hosted = data?.mode === "hosted";
+  return (
+    <AppShell right={hosted ? <AccountMenu /> : undefined}>
+      <AppRoutes hosted={hosted} />
+    </AppShell>
+  );
+}
+
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <BrowserRouter>
-          <AppShell>
-            <AppRoutes />
-          </AppShell>
+          <ModeGate>
+            <ModeAwareApp />
+          </ModeGate>
           <ThemedToaster />
         </BrowserRouter>
       </ThemeProvider>

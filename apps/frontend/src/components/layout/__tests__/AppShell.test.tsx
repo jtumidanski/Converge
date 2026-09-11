@@ -40,4 +40,22 @@ describe("AppShell", () => {
     expect(screen.getByRole("banner")).toBeInTheDocument();
     expect(screen.getByRole("main")).toContainElement(screen.getByText("page content"));
   });
+
+  it("renders the optional right slot beside the theme control", () => {
+    renderWithProviders(
+      <AppShell right={<button type="button">account menu</button>}>
+        <p>page content</p>
+      </AppShell>,
+    );
+    expect(screen.getByRole("button", { name: "account menu" })).toBeInTheDocument();
+  });
+
+  it("renders no right slot content when none is passed", () => {
+    renderWithProviders(
+      <AppShell>
+        <p>page content</p>
+      </AppShell>,
+    );
+    expect(screen.queryByRole("button", { name: "account menu" })).not.toBeInTheDocument();
+  });
 });
