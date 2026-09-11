@@ -58,7 +58,7 @@ func classify(err error) (int, string, string) {
 	switch {
 	case errors.Is(err, provider.ErrAuth):
 		return http.StatusBadGateway, "PROVIDER_AUTH", "The configured provider token was rejected."
-	case errors.Is(err, provider.ErrNotFound), errors.Is(err, session.ErrNotFound):
+	case errors.Is(err, provider.ErrNotFound), errors.Is(err, session.ErrNotFound), errors.Is(err, auth.ErrNotFound):
 		return http.StatusNotFound, "NOT_FOUND", "The requested resource does not exist."
 	case errors.Is(err, provider.ErrUnavailable):
 		return http.StatusServiceUnavailable, "PROVIDER_UNAVAILABLE", "The provider is unavailable right now."

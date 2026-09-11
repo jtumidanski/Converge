@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+
+	"github.com/jtumidanski/converge/internal/auth"
 )
 
 // TestClassifyDefaultBranchIsGitFailure pins classify()'s fallback for any
@@ -28,5 +30,25 @@ func TestClassifyInterrupted(t *testing.T) {
 	status, code, _ := classify(err)
 	if status != http.StatusServiceUnavailable || code != "INTERRUPTED" {
 		t.Fatalf("classify(DeadlineExceeded) = (%d, %q), want (503, INTERRUPTED)", status, code)
+	}
+}
+
+// TestClassifyAuthNotFound pins Task 17's extension of the not-found switch
+// case: an unknown or cross-user account row must answer 404 NOT_FOUND, the
+// same as provider.ErrNotFound and session.ErrNotFound, never disclosing
+// which of "no such row" or "not yours" applies.
+func TestClassifyAuthNotFound(t *testing.T) {
+	status, code, _ := classify(fmt.Errorf("lookup: %w", auth.ErrNotFound))
+	if status != http.StatusNotFound || code != "NOT_FOUND" {
+		t.Fatalf("classify(auth.ErrNotFound) = (%d, %q), want (404, NOT_FOUND)", status, code)
+	}
+}
+
+// TestClassifyAuthError pins the *auth.Error arm: its own Code and Status
+// travel through classify unchanged, mirroring session.ReviewError.
+func TestClassifyAuthError(t *testing.T) {
+	status, code, detail := classify(&auth.Error{Code: auth.CodeWeakPassword, Message: "too short"})
+	if status != http.StatusUnprocessableEntity || code != "WEAK_PASSWORD" || detail != "too short" {
+		t.Fatalf("classify(*auth.Error) = (%d, %q, %q), want (422, WEAK_PASSWORD, \"too short\")", status, code, detail)
 	}
 }
