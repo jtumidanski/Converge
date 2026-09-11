@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Converge is a combined PR/MR review tool: one place to review pull requests and merge requests across hosting providers. The system is a **Go** backend plus a **React/TypeScript** web UI, laid out as `apps/backend` and `apps/frontend`. The backend is one Go module (`github.com/jtumidanski/converge`) producing two binaries, `converge` (HTTP server with the embedded UI) and `converge-cli` (reconstruction proof of concept). Persistence is the filesystem only: mirrors under `REPOSITORY_CACHE_ROOT`, review sessions under `WORKSPACE_ROOT`. All CI logic lives in the root `Makefile` and `tools/`.
+Converge is a combined PR/MR review tool: one place to review pull requests and merge requests across hosting providers. The system is a **Go** backend plus a **React/TypeScript** web UI, laid out as `apps/backend` and `apps/frontend`. The backend is one Go module (`github.com/jtumidanski/converge`) producing two binaries, `converge` (HTTP server with the embedded UI) and `converge-cli` (reconstruction proof of concept). Persistence is the filesystem in standalone mode — mirrors under `REPOSITORY_CACHE_ROOT`, review sessions under `WORKSPACE_ROOT` — plus a SQLite database at `CONVERGE_DATABASE_PATH` in hosted mode. All CI logic lives in the root `Makefile` and `tools/`.
 
 ## Workflow Rules
 
