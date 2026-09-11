@@ -85,4 +85,9 @@ export const strings = {
   changesCount: (count: number) => `${count} changes`,
   changesHiddenBy: (count: number) => `${count} changes hidden by “${strings.hideDependencyBots}”`,
   couldNotLoadBranches: "Could not load branches",
+  filterFilesPlaceholder: "Filter files",
+  changedFiles: "Changed files",
+  markFileViewed: (name: string) => `Mark ${name} viewed`,
+  collapseDirectory: (name: string) => `Collapse ${name}`,
+  expandDirectory: (name: string) => `Expand ${name}`,
 } as const;

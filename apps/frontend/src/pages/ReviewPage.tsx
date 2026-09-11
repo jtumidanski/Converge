@@ -33,6 +33,10 @@ const FileDiff = lazy(async () => ({
   default: (await import("@/components/features/review/FileDiff")).FileDiff,
 }));
 
+// The viewed set and its toggle land on this page in the wiring task; until
+// then FileTree needs a stable, empty value so it never re-renders on its own.
+const EMPTY_VIEWED: ReadonlySet<string> = new Set();
+
 export function ReviewPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -149,8 +153,10 @@ export function ReviewPage() {
               ) : (
                 <FileTree
                   files={files.data ?? []}
+                  viewed={EMPTY_VIEWED}
                   selectedPath={selectedPath}
                   onSelect={setExplicitPath}
+                  onToggleViewed={() => {}}
                 />
               )}
             </aside>

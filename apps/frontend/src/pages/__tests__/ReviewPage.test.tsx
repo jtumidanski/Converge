@@ -169,7 +169,7 @@ describe("ReviewPage", () => {
     renderWithProviders(<ReviewPage />, { route: "/reviews/7f14b2c8" });
     // the first file is selected automatically
     expect(await screen.findByTestId("file-diff")).toHaveTextContent("src/field/FieldService.java");
-    await userEvent.click(screen.getByRole("button", { name: /README\.md/ }));
+    await userEvent.click(screen.getByRole("treeitem", { name: /README\.md/ }));
     await waitFor(() => expect(screen.getByTestId("file-diff")).toHaveTextContent("new readme"));
     expect(screen.getByTestId("file-diff")).not.toHaveTextContent("src/field/FieldService.java");
   });
