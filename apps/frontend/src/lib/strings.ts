@@ -54,4 +54,11 @@ export const strings = {
   show: "Show",
   clear: "Clear",
   details: "details",
+  repositoryNotFound: (fullName: string) => `${fullName} could not be found on this provider.`,
+  repositoryCheckFailed: "That repository could not be checked.",
+  selectAProvider: "Select a provider",
+  searchRepositoriesPlaceholder: "Search repositories, or paste owner/name",
+  noRepositoriesMatchSearch: "No repositories match that search.",
+  pickProviderAndRepository: "Pick a provider and a repository.",
+  reviewsPageDescription: "Resume a review in progress, or start a new one.",
 } as const;
