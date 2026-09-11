@@ -58,7 +58,7 @@ func (m *Manager) SessionDir(id string) string { return filepath.Join(m.root, id
 func (m *Manager) RepoDir(id string) string { return filepath.Join(m.root, id, "repo") }
 
 // BranchName returns the review branch name for a session id.
-func (m *Manager) BranchName(id string) string { return "review/" + id }
+func (m *Manager) BranchName(id string) string { return gitx.ReviewBranchPrefix + id }
 
 // guard validates the id and, when the session directory exists, verifies it
 // resolves (through any symlinks) to a direct child of the root named

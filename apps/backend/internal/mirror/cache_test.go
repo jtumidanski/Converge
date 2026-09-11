@@ -71,7 +71,8 @@ func TestEnsureClonesThenUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls = fr.Snapshot()
-	if len(calls) != 1 || calls[0].Category != gitx.CategoryFetch || calls[0].Dir != path || strings.Join(calls[0].Args, " ") != "remote update --prune" {
+	if len(calls) != 1 || calls[0].Category != gitx.CategoryFetch || calls[0].Dir != path ||
+		strings.Join(calls[0].Args, " ") != "fetch --prune origin "+gitx.MirrorRefspec+" "+gitx.ExcludeReviewRefspec {
 		t.Fatalf("update call = %+v", calls)
 	}
 	fr.Reset()
@@ -132,6 +133,69 @@ func TestEnsureSerialisesConcurrentCallsOnSameMirror(t *testing.T) {
 	// mirror or fail outright; verify it is a valid, readable bare repo.
 	if ok, err := c.Objects(firstPath, "atlas/server").Exists(context.Background(), src.Head()); err != nil || !ok {
 		t.Fatalf("mirror not usable after concurrent Ensure: ok=%v err=%v", ok, err)
+	}
+}
+
+// A mirror fetches +refs/*:refs/*, so a naive `--prune` deletes the
+// refs/heads/review/<id> branches that live session worktrees are sitting on:
+// the worktree's HEAD becomes a dangling symref and its next cherry-pick dies
+// with exit 128. The prune must still remove branches that really went away
+// upstream.
+func TestEnsurePruneKeepsLiveReviewBranchesButPrunesStaleOnes(t *testing.T) {
+	src := testutil.NewRepo(t)
+	src.Branch("stale")
+	src.Commit("s.txt", "s\n", "stale")
+	src.Checkout("main")
+	src.Push()
+
+	runner, err := gitx.NewExecRunner(testLogger(), gitx.Options{AllowFileProtocol: true, CommandTimeout: 30 * time.Second, CloneTimeout: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	c := New(t.TempDir(), runner, &gitx.LockMap{}, testLogger())
+	p := fake.New("fake", provider.KindGitLab)
+	repo := repoFor(t, "fake", src.CloneURL())
+	ctx := context.Background()
+	path, err := c.Ensure(ctx, p, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	branch := gitx.ReviewBranchPrefix + "abcd1234"
+	worktree := filepath.Join(t.TempDir(), "repo")
+	if _, err := runner.Run(ctx, gitx.Spec{Dir: path, Args: []string{"worktree", "add", "-b", branch, worktree, src.Head()}, Category: gitx.CategoryWorktree}); err != nil {
+		t.Fatal(err)
+	}
+
+	src.Git("push", "origin", "--delete", "stale")
+	if _, err := c.Ensure(ctx, p, repo); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := runner.Run(ctx, gitx.Spec{Dir: path, Args: []string{"branch", "--list", "--format=%(refname:short)"}, Category: gitx.CategoryQuery})
+	if err != nil {
+		t.Fatal(err)
+	}
+	branches := strings.Fields(string(res.Stdout))
+	var sawReview, sawStale bool
+	for _, b := range branches {
+		switch b {
+		case branch:
+			sawReview = true
+		case "stale":
+			sawStale = true
+		}
+	}
+	if !sawReview {
+		t.Errorf("prune deleted the live review branch: %v", branches)
+	}
+	if sawStale {
+		t.Errorf("prune did not remove the branch deleted upstream: %v", branches)
+	}
+	// The worktree must still be on a real branch, not a dangling symref.
+	if _, err := runner.Run(ctx, gitx.Spec{Dir: worktree, Args: []string{"rev-parse", "--verify", "HEAD"}, Category: gitx.CategoryQuery}); err != nil {
+		t.Errorf("worktree HEAD unusable after prune: %v", err)
 	}
 }
 
