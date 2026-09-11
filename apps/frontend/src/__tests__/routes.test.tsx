@@ -49,7 +49,7 @@ describe("AppRoutes", () => {
   describe("hosted", () => {
     it("includes the login and register paths", () => {
       const login = renderAt("/login", true);
-      expect(screen.getByText("Log in")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Log in" })).toBeInTheDocument();
       login.unmount();
 
       const register = renderAt("/register", true);
@@ -65,7 +65,7 @@ describe("AppRoutes", () => {
       );
       for (const path of ["/settings/providers", "/settings/account"]) {
         const { unmount } = renderAt(path, true);
-        expect(await screen.findByText("Log in")).toBeInTheDocument();
+        expect(await screen.findByRole("heading", { name: "Log in" })).toBeInTheDocument();
         expect(screen.queryByText("Page not found")).not.toBeInTheDocument();
         unmount();
       }
