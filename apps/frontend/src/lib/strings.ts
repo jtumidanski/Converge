@@ -70,4 +70,5 @@ export const strings = {
   noBranchesMatchFilter: "No branches match that filter.",
   branchDefault: "default",
   useTypedBranch: (name: string) => `Use “${name}”`,
+  shownOfTotal: (shown: number, total: number) => `${shown} of ${total} shown`,
 } as const;
