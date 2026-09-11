@@ -1,11 +1,19 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { http, HttpResponse, server } from "@/test/server";
-import { apiDelete, apiGet, apiGetText, apiPost } from "@/lib/api/client";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { errorDoc, http, HttpResponse, server } from "@/test/server";
+import {
+  apiDelete,
+  apiGet,
+  apiGetText,
+  apiPatch,
+  apiPost,
+  setUnauthorizedHandler,
+} from "@/lib/api/client";
 import { ApiError, isApiError, messageFor } from "@/lib/api/errors";
 
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
+beforeEach(() => setUnauthorizedHandler(null));
 
 describe("api client", () => {
   it("sends JSON:API headers and returns the parsed body", async () => {
@@ -71,5 +79,77 @@ describe("api client", () => {
     await expect(apiDelete("/api/reviews/abc")).resolves.toBeUndefined();
     server.use(http.get("/api/reviews/abc/diff", () => HttpResponse.text("diff --git a/x b/x")));
     await expect(apiGetText("/api/reviews/abc/diff")).resolves.toContain("diff --git");
+  });
+
+  it("sends credentials on every request", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    server.use(
+      http.get("/api/creds-get", () => HttpResponse.json({ data: { type: "x", id: "1" } })),
+      http.post("/api/creds-post", () => HttpResponse.json({ data: { type: "x", id: "1" } })),
+    );
+    await apiGet("/api/creds-get");
+    await apiPost("/api/creds-post", { data: {} });
+    expect(
+      fetchSpy.mock.calls.every(([, init]) => (init as RequestInit).credentials === "include"),
+    ).toBe(true);
+    fetchSpy.mockRestore();
+  });
+
+  it("invokes the unauthorized handler on 401 and still throws", async () => {
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+    server.use(
+      http.get("/api/needs-auth", () =>
+        HttpResponse.json(errorDoc(401, "UNAUTHENTICATED", "Not signed in"), { status: 401 }),
+      ),
+    );
+    const error = (await apiGet("/api/needs-auth").catch((e: unknown) => e)) as ApiError;
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.status).toBe(401);
+  });
+
+  it("does not invoke the unauthorized handler on other failures", async () => {
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+    server.use(
+      http.get("/api/forbidden", () =>
+        HttpResponse.json(errorDoc(403, "FORBIDDEN", "No"), { status: 403 }),
+      ),
+      http.get("/api/broken", () =>
+        HttpResponse.json(errorDoc(500, "UNKNOWN", "Boom"), { status: 500 }),
+      ),
+    );
+    await apiGet("/api/forbidden").catch(() => undefined);
+    await apiGet("/api/broken").catch(() => undefined);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("setUnauthorizedHandler(null) detaches", async () => {
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+    setUnauthorizedHandler(null);
+    server.use(
+      http.get("/api/needs-auth-2", () =>
+        HttpResponse.json(errorDoc(401, "UNAUTHENTICATED", "Not signed in"), { status: 401 }),
+      ),
+    );
+    await apiGet("/api/needs-auth-2").catch(() => undefined);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("apiPatch sends the JSON:API content type", async () => {
+    let seenMethod = "";
+    let seenContentType = "";
+    server.use(
+      http.patch("/api/patch-target", ({ request }) => {
+        seenMethod = request.method;
+        seenContentType = request.headers.get("Content-Type") ?? "";
+        return HttpResponse.json({ data: { type: "x", id: "1" } });
+      }),
+    );
+    await apiPatch("/api/patch-target", { data: {} });
+    expect(seenMethod).toBe("PATCH");
+    expect(seenContentType).toBe("application/vnd.api+json");
   });
 });
