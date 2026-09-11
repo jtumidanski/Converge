@@ -682,3 +682,43 @@ func TestSessionForDistinguishesCorruptFromAbsent(t *testing.T) {
 	}
 	assertErrorCode(t, w, "NOT_FOUND")
 }
+
+func TestRepositorySearchFilters(t *testing.T) {
+	f := newAPIFixture(t)
+
+	hit := do(t, f.handler, "GET", "/api/providers/fake/repositories?search=serv", "")
+	if hit.Code != 200 {
+		t.Fatalf("status = %d, body %s", hit.Code, hit.Body.String())
+	}
+	if items := decodeList(t, hit); len(items) != 1 || items[0]["id"] != "atlas/server" {
+		t.Errorf("items = %v, want only atlas/server", items)
+	}
+
+	miss := do(t, f.handler, "GET", "/api/providers/fake/repositories?search=nothing-matches", "")
+	if miss.Code != 200 {
+		t.Fatalf("status = %d", miss.Code)
+	}
+	if items := decodeList(t, miss); len(items) != 0 {
+		t.Errorf("items = %v, want none", items)
+	}
+}
+
+func TestRepositorySearchTooLong(t *testing.T) {
+	f := newAPIFixture(t)
+	w := do(t, f.handler, "GET", "/api/providers/fake/repositories?search="+strings.Repeat("a", 201), "")
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	assertErrorCode(t, w, "INVALID_SEARCH")
+}
+
+func TestRepositorySearchIsTrimmed(t *testing.T) {
+	f := newAPIFixture(t)
+	w := do(t, f.handler, "GET", "/api/providers/fake/repositories?search=%20%20serv%20%20", "")
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+	}
+	if items := decodeList(t, w); len(items) != 1 {
+		t.Errorf("items = %v, want the trimmed search to match atlas/server", items)
+	}
+}

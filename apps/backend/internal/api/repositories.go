@@ -3,7 +3,6 @@ package api
 import (
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/jtumidanski/converge/internal/gitx"
 	"github.com/jtumidanski/converge/internal/jsonapi"
@@ -66,8 +65,12 @@ func (s *server) listRepositories(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	search, ok := searchFrom(w, r)
+	if !ok {
+		return
+	}
 	page := pageFrom(r)
-	res, err := p.ListRepositories(r.Context(), strings.TrimSpace(r.URL.Query().Get("search")), page)
+	res, err := p.ListRepositories(r.Context(), search, page)
 	if err != nil {
 		writeDomainError(w, s.deps.Log, err)
 		return
