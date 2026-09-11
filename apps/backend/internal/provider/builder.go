@@ -44,6 +44,31 @@ func (b *RepositoryBuilder) Build() (Repository, error) {
 	return r, nil
 }
 
+// BranchBuilder constructs a Branch.
+type BranchBuilder struct{ b Branch }
+
+func NewBranchBuilder() *BranchBuilder { return &BranchBuilder{} }
+
+func (b *BranchBuilder) SetName(v string) *BranchBuilder  { b.b.name = v; return b }
+func (b *BranchBuilder) SetSHA(v string) *BranchBuilder   { b.b.sha = v; return b }
+func (b *BranchBuilder) SetDefault(v bool) *BranchBuilder { b.b.isDefault = v; return b }
+
+// Build validates the branch name and, when present, the tip SHA. Validating
+// here means a provider can never hand the API a ref that POST /api/reviews
+// would later reject: the same gitx rules guard both doors.
+func (b *BranchBuilder) Build() (Branch, error) {
+	br := b.b
+	if err := gitx.ValidateBranchSyntax(br.name); err != nil {
+		return Branch{}, fmt.Errorf("branch: %w", err)
+	}
+	if br.sha != "" {
+		if err := gitx.ValidateSHA(br.sha); err != nil {
+			return Branch{}, fmt.Errorf("branch: %w", err)
+		}
+	}
+	return br, nil
+}
+
 // ChangeRequestBuilder constructs a ChangeRequest.
 type ChangeRequestBuilder struct{ c ChangeRequest }
 

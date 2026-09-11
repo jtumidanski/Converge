@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"unicode/utf8"
 
 	"github.com/jtumidanski/converge/internal/gitx"
@@ -24,6 +25,14 @@ const (
 
 // MaxFileDiffBytes caps per-file diff text.
 const MaxFileDiffBytes = 1 << 20
+
+// fileDiffContext is how many unchanged lines surround each hunk in a
+// per-file diff. Git's default of 3 leaves nothing for the UI to fold and
+// expand; 40 gives the review page real unmodified runs to collapse without a
+// second request for full file contents. The combined diff (WriteCombined) and
+// the numstat totals (Summarize) keep git's defaults, so nothing downstream of
+// them changes.
+const fileDiffContext = 40
 
 // FileSummary is one entry of the file tree.
 type FileSummary struct {
@@ -147,7 +156,7 @@ func FileContent(ctx context.Context, r gitx.Runner, repoDir, base, head string,
 	if err := gitx.ValidatePathArg(f.Path); err != nil {
 		return FileDiff{}, err
 	}
-	args := []string{"diff", "--find-renames", base, head, "--", f.Path}
+	args := []string{"diff", "--find-renames", "-U" + strconv.Itoa(fileDiffContext), base, head, "--", f.Path}
 	if f.PreviousPath != "" {
 		if err := gitx.ValidatePathArg(f.PreviousPath); err != nil {
 			return FileDiff{}, err

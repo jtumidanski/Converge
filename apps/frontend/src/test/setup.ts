@@ -16,6 +16,9 @@ class ResizeObserverStub {
 beforeEach(() => {
   installMatchMedia();
   vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+  // jsdom does not implement scrollIntoView either; cmdk (the new-review
+  // drawer's command palette) calls it on every highlighted-row change.
+  Element.prototype.scrollIntoView = vi.fn();
 });
 
 afterEach(() => {

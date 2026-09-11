@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Converge UX mockups</title>
+<link rel="stylesheet" href="mock.css">
+<style>
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 24px; }
+  .grid .card { padding: 18px; display: grid; gap: 10px; align-content: start; }
+  .grid ul { margin: 0; padding-left: 18px; color: var(--muted-fg); font-size: 13px; display: grid; gap: 4px; }
+  .cmp { margin-top: 32px; }
+  .cmp td:first-child { color: var(--muted-fg); width: 200px; }
+</style></head>
+<body>
+<div class="topbar"><span class="brand">Converge</span><span class="crumbs"><span class="sep">/</span><span class="cur">UX mockups</span></span></div>
+<div class="page">
+  <h1>Three directions for the web UI</h1>
+  <div class="sub">Each mockup covers the root page, review creation, and the review itself. Use the pill at bottom-right or keys 1/2/3 to switch screens.</div>
+
+  <div class="card" style="margin-top:24px;padding:18px;display:flex;align-items:center;gap:16px;border-color:var(--ring)">
+    <div class="grow"><h2>D · Mix (chosen direction)</h2><div class="xs muted" style="margin-top:4px">B's root page with an inline "Start a new review" row that expands into provider → repository, then A's create and review views. Header gets a separated brand block.</div></div>
+    <a class="btn primary" href="d-mix.html">Open D →</a>
+  </div>
+
+  <div class="grid">
+    <a class="card" href="a-dashboard.html">
+      <h2>A · Dashboard</h2>
+      <div class="xs muted">Closest to today's layout, fewest surprises.</div>
+      <ul>
+        <li>Resume cards first, single repo typeahead beside them</li>
+        <li>Changes grouped by ticket key with "select all N"</li>
+        <li>Three-pane review: tree with viewed checkboxes, sticky file header, next-file button</li>
+      </ul>
+      <span class="btn primary" style="justify-self:start">Open A →</span>
+    </a>
+    <a class="card" href="b-stepper.html">
+      <h2>B · Guided flow</h2>
+      <div class="xs muted">Explicit steps, selection always visible.</div>
+      <ul>
+        <li>Provider cards with health, filtered repo list, 4-step header</li>
+        <li>Sticky "Review composition" panel shows apply order and base</li>
+        <li>Full-width diff with file picker, Files / Changes / Conflicts tabs</li>
+      </ul>
+      <span class="btn primary" style="justify-self:start">Open B →</span>
+    </a>
+    <a class="card" href="c-dense.html">
+      <h2>C · Dense, keyboard-first</h2>
+      <div class="xs muted">Most change, most leverage for daily use.</div>
+      <ul>
+        <li>One command box that searches reviews, repos, and ticket keys</li>
+        <li>Commit-stack sidebar while composing; j/k/space/t shortcuts</li>
+        <li>Single-scroll diff with per-line MR attribution</li>
+      </ul>
+      <span class="btn primary" style="justify-self:start">Open C →</span>
+    </a>
+  </div>
+
+  <div class="cmp card" style="overflow:hidden">
+    <table class="tbl">
+      <thead><tr><th>Problem in current UI</th><th>A</th><th>B</th><th>C</th></tr></thead>
+      <tbody>
+        <tr><td>Provider + owner/name + 1,000-row repo table to find one repo</td><td>Typeahead across providers, recents list</td><td>Provider cards, filtered list ranked by recency</td><td>Command box, recents in sidebar</td></tr>
+        <tr><td>Resume cards are wordy; conflicted/building states not visible</td><td>Cards with status dot, MR chips, progress bar</td><td>Compact table with progress column</td><td>List rows with status; problem reviews split out</td></tr>
+        <tr><td>Renovate MRs bury the human ones</td><td>Toggle to hide, group by ticket</td><td>Toggle to hide, ticket badges</td><td>Dimmed, not hidden</td></tr>
+        <tr><td>Selection order and base are invisible until "Build Review"</td><td>Sticky selection bar with numbered chips</td><td>Side panel with numbered apply order</td><td>Commit stack in sidebar on top of base SHA</td></tr>
+        <tr><td>Base branch is a free-text input</td><td>Branch select</td><td>Branch select</td><td>Branch select</td></tr>
+        <tr><td>File paths truncated in the tree; no viewed state; no next-file</td><td>Real tree, viewed checkbox, footer next-file</td><td>File picker dropdown, prev/next arrows</td><td>Single scroll, sticky headers, j/k</td></tr>
+        <tr><td>Nothing tells the reviewer which MR a line came from</td><td>—</td><td>Bottom sheet lists included MRs</td><td>Per-line MR attribution column</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+</body></html>

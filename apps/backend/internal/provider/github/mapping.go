@@ -89,6 +89,23 @@ func (p pullJSON) toModel(providerID string, repo provider.Repository) (provider
 	return cr, nil
 }
 
+type branchJSON struct {
+	Name   string `json:"name"`
+	Commit struct {
+		SHA string `json:"sha"`
+	} `json:"commit"`
+}
+
+// toModel derives isDefault from the repository, because GitHub's branch
+// payload carries no default flag.
+func (b branchJSON) toModel(defaultBranch string) (provider.Branch, error) {
+	return provider.NewBranchBuilder().
+		SetName(b.Name).
+		SetSHA(b.Commit.SHA).
+		SetDefault(b.Name == defaultBranch).
+		Build()
+}
+
 type commitJSON struct {
 	SHA    string `json:"sha"`
 	Commit struct {

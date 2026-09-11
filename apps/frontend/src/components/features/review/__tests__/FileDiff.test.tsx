@@ -100,8 +100,11 @@ describe("FileDiff theming", () => {
     renderWithProviders(<FileDiff file={diffFile()} />);
     expect(lastOptions()).toMatchObject({
       diffStyle: "unified",
-      expandUnchanged: true,
+      expandUnchanged: false,
       collapsedContextThreshold: 8,
+      expansionLineCount: 20,
+      lineDiffType: "word",
+      disableFileHeader: true,
       overflow: "scroll",
     });
   });

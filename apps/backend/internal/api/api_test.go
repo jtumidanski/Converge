@@ -74,6 +74,16 @@ func newAPIFixture(t *testing.T) *apiFixture {
 	}
 	p := fake.New("fake", provider.KindGitLab)
 	p.AddRepository(repo)
+	for _, b := range []struct {
+		name      string
+		isDefault bool
+	}{{"main", true}, {"develop", false}, {"release/1.0", false}} {
+		br, err := provider.NewBranchBuilder().SetName(b.name).SetDefault(b.isDefault).Build()
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.AddBranch("atlas/server", br)
+	}
 	commit, _ := provider.NewCommit(c, "a1", time.Now())
 	cr, err := provider.NewChangeRequestBuilder().SetProviderID("fake").SetRepository(repo).SetNumber(421).SetTitle("Add a").
 		SetAuthor("jsmith").SetWebURL("https://example.test/mr/421").SetSourceBranch("feat/a").SetTargetBranch("main").
@@ -681,4 +691,151 @@ func TestSessionForDistinguishesCorruptFromAbsent(t *testing.T) {
 		t.Errorf("absent session: code = %d body = %s", w.Code, w.Body.String())
 	}
 	assertErrorCode(t, w, "NOT_FOUND")
+}
+
+func TestRepositorySearchFilters(t *testing.T) {
+	f := newAPIFixture(t)
+
+	hit := do(t, f.handler, "GET", "/api/providers/fake/repositories?search=serv", "")
+	if hit.Code != 200 {
+		t.Fatalf("status = %d, body %s", hit.Code, hit.Body.String())
+	}
+	if items := decodeList(t, hit); len(items) != 1 || items[0]["id"] != "atlas/server" {
+		t.Errorf("items = %v, want only atlas/server", items)
+	}
+
+	miss := do(t, f.handler, "GET", "/api/providers/fake/repositories?search=nothing-matches", "")
+	if miss.Code != 200 {
+		t.Fatalf("status = %d", miss.Code)
+	}
+	if items := decodeList(t, miss); len(items) != 0 {
+		t.Errorf("items = %v, want none", items)
+	}
+}
+
+func TestRepositorySearchTooLong(t *testing.T) {
+	f := newAPIFixture(t)
+	w := do(t, f.handler, "GET", "/api/providers/fake/repositories?search="+strings.Repeat("a", 201), "")
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	assertErrorCode(t, w, "INVALID_SEARCH")
+}
+
+func TestRepositorySearchIsTrimmed(t *testing.T) {
+	f := newAPIFixture(t)
+	w := do(t, f.handler, "GET", "/api/providers/fake/repositories?search=%20%20serv%20%20", "")
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+	}
+	if items := decodeList(t, w); len(items) != 1 {
+		t.Errorf("items = %v, want the trimmed search to match atlas/server", items)
+	}
+}
+
+func TestChangesSearchTooLong(t *testing.T) {
+	f := newAPIFixture(t)
+	target := "/api/providers/fake/repositories/" + url.PathEscape("atlas/server") + "/changes?target=main&search=" + strings.Repeat("a", 201)
+	w := do(t, f.handler, "GET", target, "")
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400, body %s", w.Code, w.Body.String())
+	}
+	assertErrorCode(t, w, "INVALID_SEARCH")
+}
+
+func TestListBranchesDefaultFirst(t *testing.T) {
+	f := newAPIFixture(t)
+	w := do(t, f.handler, "GET", "/api/providers/fake/repositories/"+url.PathEscape("atlas/server")+"/branches", "")
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
+	}
+	items := decodeList(t, w)
+	if len(items) != 3 {
+		t.Fatalf("items = %d, want 3", len(items))
+	}
+	if items[0]["type"] != "branches" {
+		t.Errorf("type = %v, want branches", items[0]["type"])
+	}
+	if items[0]["id"] != "fake:atlas/server:main" {
+		t.Errorf("id = %v, want fake:atlas/server:main", items[0]["id"])
+	}
+	attrs, _ := items[0]["attributes"].(map[string]any)
+	if attrs["name"] != "main" || attrs["isDefault"] != true {
+		t.Errorf("attributes = %v, want main/default", attrs)
+	}
+}
+
+func TestListBranchesPages(t *testing.T) {
+	f := newAPIFixture(t)
+	target := "/api/providers/fake/repositories/" + url.PathEscape("atlas/server") + "/branches?page=1&pageSize=2"
+	w := do(t, f.handler, "GET", target, "")
+	if w.Code != 200 {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if items := decodeList(t, w); len(items) != 2 {
+		t.Fatalf("items = %d, want 2", len(items))
+	}
+	var doc struct {
+		Meta struct {
+			Page struct {
+				Number  int  `json:"number"`
+				Size    int  `json:"size"`
+				HasNext bool `json:"hasNext"`
+			} `json:"page"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.Meta.Page.Number != 1 || doc.Meta.Page.Size != 2 || !doc.Meta.Page.HasNext {
+		t.Errorf("page meta = %+v", doc.Meta.Page)
+	}
+}
+
+func TestListBranchesSearch(t *testing.T) {
+	f := newAPIFixture(t)
+	target := "/api/providers/fake/repositories/" + url.PathEscape("atlas/server") + "/branches?search=rel"
+	w := do(t, f.handler, "GET", target, "")
+	items := decodeList(t, w)
+	if len(items) != 1 || items[0]["id"] != "fake:atlas/server:release/1.0" {
+		t.Errorf("items = %v, want only release/1.0", items)
+	}
+}
+
+func TestListBranchesUnknownRepository(t *testing.T) {
+	f := newAPIFixture(t)
+	w := do(t, f.handler, "GET", "/api/providers/fake/repositories/"+url.PathEscape("atlas/missing")+"/branches", "")
+	if w.Code != 404 {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	assertErrorCode(t, w, "NOT_FOUND")
+}
+
+func TestListBranchesInvalidRepository(t *testing.T) {
+	f := newAPIFixture(t)
+	w := do(t, f.handler, "GET", "/api/providers/fake/repositories/"+url.PathEscape("../etc")+"/branches", "")
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	assertErrorCode(t, w, "INVALID_REPOSITORY")
+}
+
+func TestListBranchesProviderAuthFailure(t *testing.T) {
+	f := newAPIFixture(t)
+	f.prov.FailWith(provider.ErrAuth)
+	w := do(t, f.handler, "GET", "/api/providers/fake/repositories/"+url.PathEscape("atlas/server")+"/branches", "")
+	if w.Code != 502 {
+		t.Fatalf("status = %d, want 502", w.Code)
+	}
+	assertErrorCode(t, w, "PROVIDER_AUTH")
+}
+
+func TestListBranchesSearchTooLong(t *testing.T) {
+	f := newAPIFixture(t)
+	target := "/api/providers/fake/repositories/" + url.PathEscape("atlas/server") + "/branches?search=" + strings.Repeat("a", 201)
+	w := do(t, f.handler, "GET", target, "")
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400", w.Code)
+	}
+	assertErrorCode(t, w, "INVALID_SEARCH")
 }

@@ -14,6 +14,7 @@ export interface PagedRepositories {
 }
 
 export interface RepositoryListParams {
+  search?: string;
   page?: number;
   pageSize?: number;
 }
@@ -33,7 +34,7 @@ function query(params: Record<string, string | number | undefined>): string {
 export const repositoriesService = {
   async list(providerId: string, params: RepositoryListParams = {}): Promise<PagedRepositories> {
     const doc = await apiGet<ListDocument<Repository>>(
-      `/api/providers/${encodeURIComponent(providerId)}/repositories${query({ page: params.page, pageSize: params.pageSize })}`,
+      `/api/providers/${encodeURIComponent(providerId)}/repositories${query({ search: params.search, page: params.page, pageSize: params.pageSize })}`,
     );
     const items = unwrapList(doc);
     return doc.meta?.page ? { items, page: doc.meta.page } : { items };

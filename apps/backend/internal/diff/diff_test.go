@@ -295,3 +295,27 @@ func TestSummarizeEmptyDiff(t *testing.T) {
 		t.Errorf("combined.diff for empty range should be empty, got %q", b)
 	}
 }
+
+// TestFileContentUsesWideContext pins the -U40 window the review page's fold
+// rows depend on: with git's default of three context lines there would be no
+// unmodified run long enough to collapse (design 3.5).
+func TestFileContentUsesWideContext(t *testing.T) {
+	var args []string
+	fr := &gitx.FakeRunner{Handler: func(s gitx.Spec) (gitx.Result, error) {
+		args = append([]string(nil), s.Args...)
+		return gitx.Result{Stdout: []byte("diff --git a/a.txt b/a.txt\n")}, nil
+	}}
+	f := FileSummary{Path: "a.txt"}
+	if _, err := FileContent(context.Background(), fr, t.TempDir(), strings.Repeat("a", 40), strings.Repeat("b", 40), f); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"diff", "--find-renames", "-U40", strings.Repeat("a", 40), strings.Repeat("b", 40), "--", "a.txt"}
+	if len(args) != len(want) {
+		t.Fatalf("args = %v, want %v", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("args = %v, want %v", args, want)
+		}
+	}
+}

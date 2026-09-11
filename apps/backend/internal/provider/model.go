@@ -34,6 +34,17 @@ func (r Repository) DefaultBranch() string { return r.defaultBranch }
 func (r Repository) WebURL() string        { return r.webURL }
 func (r Repository) CloneURL() string      { return r.cloneURL }
 
+// Branch is an immutable provider branch reference.
+type Branch struct {
+	name      string
+	sha       string
+	isDefault bool
+}
+
+func (b Branch) Name() string    { return b.name }
+func (b Branch) SHA() string     { return b.sha }
+func (b Branch) IsDefault() bool { return b.isDefault }
+
 // Commit is an immutable commit reference.
 type Commit struct {
 	sha        string

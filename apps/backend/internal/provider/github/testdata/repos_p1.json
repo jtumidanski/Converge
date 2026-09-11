@@ -1,0 +1,4 @@
+[
+  {"name":"server","full_name":"atlas/server","owner":{"login":"atlas"},"default_branch":"main","html_url":"https://github.test/atlas/server","clone_url":"https://github.test/atlas/server.git"},
+  {"name":"client","full_name":"atlas/client","owner":{"login":"atlas"},"default_branch":"main","html_url":"https://github.test/atlas/client","clone_url":"https://github.test/atlas/client.git"}
+]

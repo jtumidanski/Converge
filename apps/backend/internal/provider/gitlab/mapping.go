@@ -73,6 +73,18 @@ func (m mrJSON) toModel(providerID string, repo provider.Repository) (provider.C
 	return cr, nil
 }
 
+type branchJSON struct {
+	Name    string `json:"name"`
+	Default bool   `json:"default"`
+	Commit  struct {
+		ID string `json:"id"`
+	} `json:"commit"`
+}
+
+func (b branchJSON) toModel() (provider.Branch, error) {
+	return provider.NewBranchBuilder().SetName(b.Name).SetSHA(b.Commit.ID).SetDefault(b.Default).Build()
+}
+
 type commitJSON struct {
 	ID           string    `json:"id"`
 	Message      string    `json:"message"`

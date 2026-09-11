@@ -89,14 +89,14 @@ func newClient(srv *httptest.Server) *Client {
 func TestListRepositoriesAndGet(t *testing.T) {
 	srv, _ := newServer(t, false)
 	c := newClient(srv)
-	s, err := c.ListRepositories(context.Background(), provider.Page{Number: 1, Size: 2})
+	s, err := c.ListRepositories(context.Background(), "", provider.Page{Number: 1, Size: 2})
 	if err != nil || len(s.Items) != 2 || !s.HasNext {
 		t.Fatalf("%v %+v", err, s)
 	}
 	if s.Items[1].FullName() != "atlas/apps/web" || s.Items[1].Namespace() != "atlas/apps" || s.Items[1].Name() != "web" || s.Items[1].DefaultBranch() != "develop" {
 		t.Errorf("mapping: %+v", s.Items[1])
 	}
-	s, _ = c.ListRepositories(context.Background(), provider.Page{Number: 2, Size: 2})
+	s, _ = c.ListRepositories(context.Background(), "", provider.Page{Number: 2, Size: 2})
 	if s.HasNext {
 		t.Error("page 2 must be last")
 	}
@@ -336,5 +336,76 @@ func TestMRJSONState(t *testing.T) {
 				t.Errorf("state(%q) = %v, want %v", tc.raw, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestListRepositoriesSearchQuery(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.RawQuery
+		_, _ = w.Write(fixture(t, "projects_search.json"))
+	}))
+	defer srv.Close()
+	c := New("gl", "GitLab", srv.URL, config.NewSecret("glpat"), srv.Client())
+
+	res, err := c.ListRepositories(context.Background(), "serv", provider.Page{Number: 1, Size: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Items) != 1 || res.Items[0].FullName() != "atlas/server" {
+		t.Fatalf("items = %+v", res.Items)
+	}
+	for _, want := range []string{"search=serv", "search_namespaces=true", "membership=true", "per_page=30"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("query %q missing %q", got, want)
+		}
+	}
+}
+
+func TestListRepositoriesWithoutSearchSendsNoSearchParam(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.RawQuery
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer srv.Close()
+	c := New("gl", "GitLab", srv.URL, config.NewSecret("glpat"), srv.Client())
+	if _, err := c.ListRepositories(context.Background(), "", provider.Page{Number: 1, Size: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "search") {
+		t.Errorf("query = %s, want no search parameter", got)
+	}
+}
+
+func TestListBranchesUsesServerSearch(t *testing.T) {
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		w.Header().Set("X-Next-Page", "")
+		_, _ = w.Write(fixture(t, "branches.json"))
+	}))
+	defer srv.Close()
+	c := New("gl", "GitLab", srv.URL, config.NewSecret("glpat"), srv.Client())
+	repo, err := provider.NewRepositoryBuilder().SetProviderID("gl").SetFullName("atlas/server").
+		SetDefaultBranch("main").SetCloneURL("https://gitlab.test/atlas/server.git").Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := c.ListBranches(context.Background(), repo, "ma", provider.Page{Number: 1, Size: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("items = %d, want 2 (GitLab filters server-side; the fixture is returned as-is)", len(got.Items))
+	}
+	if got.Items[1].Name() != "main" || !got.Items[1].IsDefault() {
+		t.Errorf("main = %+v, want default true from the payload flag", got.Items[1])
+	}
+	for _, want := range []string{"search=ma", "per_page=50"} {
+		if !strings.Contains(query, want) {
+			t.Errorf("query %q missing %q", query, want)
+		}
 	}
 }

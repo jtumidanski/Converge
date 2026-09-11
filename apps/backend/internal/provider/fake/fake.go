@@ -13,23 +13,25 @@ import (
 
 // Provider stores repositories and changes in memory.
 type Provider struct {
-	id      string
-	kind    provider.Kind
-	mu      sync.Mutex
-	repos   map[string]provider.Repository
-	changes map[string]map[int]provider.ChangeRequest
-	commits map[string]map[int][]provider.Commit
-	nextErr error
+	id       string
+	kind     provider.Kind
+	mu       sync.Mutex
+	repos    map[string]provider.Repository
+	changes  map[string]map[int]provider.ChangeRequest
+	commits  map[string]map[int][]provider.Commit
+	branches map[string][]provider.Branch
+	nextErr  error
 }
 
 // New creates an empty provider.
 func New(id string, kind provider.Kind) *Provider {
 	return &Provider{
-		id:      id,
-		kind:    kind,
-		repos:   map[string]provider.Repository{},
-		changes: map[string]map[int]provider.ChangeRequest{},
-		commits: map[string]map[int][]provider.Commit{},
+		id:       id,
+		kind:     kind,
+		repos:    map[string]provider.Repository{},
+		changes:  map[string]map[int]provider.ChangeRequest{},
+		commits:  map[string]map[int][]provider.Commit{},
+		branches: map[string][]provider.Branch{},
 	}
 }
 
@@ -88,17 +90,51 @@ func (p *Provider) takeErr() error {
 	return err
 }
 
-func (p *Provider) ListRepositories(_ context.Context, page provider.Page) (provider.Slice[provider.Repository], error) {
+func (p *Provider) ListRepositories(_ context.Context, search string, page provider.Page) (provider.Slice[provider.Repository], error) {
 	if err := p.takeErr(); err != nil {
 		return provider.Slice[provider.Repository]{}, err
 	}
+	needle := strings.ToLower(search)
 	p.mu.Lock()
 	all := make([]provider.Repository, 0, len(p.repos))
 	for _, r := range p.repos {
+		if needle != "" && !strings.Contains(strings.ToLower(r.FullName()), needle) {
+			continue
+		}
 		all = append(all, r)
 	}
 	p.mu.Unlock()
 	sort.Slice(all, func(i, j int) bool { return all[i].FullName() < all[j].FullName() })
+	return paginate(all, page), nil
+}
+
+// AddBranch registers a branch under fullName.
+func (p *Provider) AddBranch(fullName string, b provider.Branch) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.branches[fullName] = append(p.branches[fullName], b)
+}
+
+func (p *Provider) ListBranches(_ context.Context, repo provider.Repository, search string, page provider.Page) (provider.Slice[provider.Branch], error) {
+	if err := p.takeErr(); err != nil {
+		return provider.Slice[provider.Branch]{}, err
+	}
+	needle := strings.ToLower(search)
+	p.mu.Lock()
+	all := make([]provider.Branch, 0, len(p.branches[repo.FullName()]))
+	for _, b := range p.branches[repo.FullName()] {
+		if needle != "" && !strings.Contains(strings.ToLower(b.Name()), needle) {
+			continue
+		}
+		all = append(all, b)
+	}
+	p.mu.Unlock()
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].IsDefault() != all[j].IsDefault() {
+			return all[i].IsDefault()
+		}
+		return all[i].Name() < all[j].Name()
+	})
 	return paginate(all, page), nil
 }
 

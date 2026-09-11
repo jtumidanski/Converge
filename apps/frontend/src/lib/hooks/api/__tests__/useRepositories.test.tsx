@@ -62,6 +62,23 @@ describe("useRepositories", () => {
   });
 });
 
+describe("useRepositories search", () => {
+  it("passes search through to the repositories endpoint", async () => {
+    let seen = "";
+    server.use(
+      http.get("/api/providers/gl/repositories", ({ request }) => {
+        seen = new URL(request.url).searchParams.toString();
+        return HttpResponse.json(listDoc([]));
+      }),
+    );
+    const { result } = renderHook(() => useRepositories("gl", { search: "serv", page: 1 }), {
+      wrapper: queryWrapper(),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(seen).toContain("search=serv");
+  });
+});
+
 describe("useRepository", () => {
   it("does not fetch when enabled is false", async () => {
     let calls = 0;

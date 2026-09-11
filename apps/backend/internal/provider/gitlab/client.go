@@ -63,9 +63,17 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 	return h.Get("X-Next-Page"), nil
 }
 
-func (c *Client) ListRepositories(ctx context.Context, page provider.Page) (provider.Slice[provider.Repository], error) {
+// ListRepositories lists projects the token is a member of, optionally
+// filtered by search. search_namespaces widens GitLab's match from the
+// project path alone to the full namespace path, so "atlas/serv" finds
+// "atlas/server".
+func (c *Client) ListRepositories(ctx context.Context, search string, page provider.Page) (provider.Slice[provider.Repository], error) {
 	page = page.Normalize()
 	q := url.Values{"membership": {"true"}, "order_by": {"path"}, "sort": {"asc"}, "per_page": {strconv.Itoa(page.Size)}, "page": {strconv.Itoa(page.Number)}}
+	if search != "" {
+		q.Set("search", search)
+		q.Set("search_namespaces", "true")
+	}
 	var raw []projectJSON
 	next, err := c.get(ctx, "/projects", q, &raw)
 	if err != nil {
@@ -80,6 +88,33 @@ func (c *Client) ListRepositories(ctx context.Context, page provider.Page) (prov
 		items = append(items, r)
 	}
 	return provider.Slice[provider.Repository]{Items: items, HasNext: next != ""}, nil
+}
+
+// ListBranches lists repo's branches. GitLab's search is a substring match
+// with optional ^/$ anchors; both are harmless and are passed through.
+func (c *Client) ListBranches(ctx context.Context, repo provider.Repository, search string, page provider.Page) (provider.Slice[provider.Branch], error) {
+	if err := gitx.ValidateRepoFullName(repo.FullName()); err != nil {
+		return provider.Slice[provider.Branch]{}, err
+	}
+	page = page.Normalize()
+	q := url.Values{"per_page": {strconv.Itoa(page.Size)}, "page": {strconv.Itoa(page.Number)}}
+	if search != "" {
+		q.Set("search", search)
+	}
+	var raw []branchJSON
+	next, err := c.get(ctx, projectPath(repo.FullName())+"/repository/branches", q, &raw)
+	if err != nil {
+		return provider.Slice[provider.Branch]{}, err
+	}
+	items := make([]provider.Branch, 0, len(raw))
+	for _, b := range raw {
+		br, err := b.toModel()
+		if err != nil {
+			return provider.Slice[provider.Branch]{}, err
+		}
+		items = append(items, br)
+	}
+	return provider.Slice[provider.Branch]{Items: items, HasNext: next != ""}, nil
 }
 
 func (c *Client) GetRepository(ctx context.Context, fullName string) (provider.Repository, error) {

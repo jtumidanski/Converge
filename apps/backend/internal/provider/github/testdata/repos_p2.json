@@ -1,0 +1,4 @@
+[
+  {"name":"server-tools","full_name":"atlas/server-tools","owner":{"login":"atlas"},"default_branch":"main","html_url":"https://github.test/atlas/server-tools","clone_url":"https://github.test/atlas/server-tools.git"},
+  {"name":"docs","full_name":"atlas/docs","owner":{"login":"atlas"},"default_branch":"main","html_url":"https://github.test/atlas/docs","clone_url":"https://github.test/atlas/docs.git"}
+]
