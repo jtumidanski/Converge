@@ -928,3 +928,54 @@ func TestPurgeRemovesEveryOwnedSession(t *testing.T) {
 		t.Errorf("userB's directory should survive purge: %v", err)
 	}
 }
+
+// TestPurgeCleanupFailureIsRetriedBySweep is the fix for the round-1 audit
+// finding: a Cleanup failure inside Purge must not strand the purged
+// session's on-disk data indefinitely. It is instead routed through the
+// same persistCleanupFailure path Finish/expire already use, so it is
+// registered in pendingCleanup and a later Sweep still finishes the job.
+// (Invisibility to real callers is guaranteed at the auth layer, which has
+// already deleted the account by the time Purge runs and so can never again
+// hand out a scope for this user id — not by the store rejecting the owner
+// string, which it does not do.)
+func TestPurgeCleanupFailureIsRetriedBySweep(t *testing.T) {
+	now := t0
+	root := t.TempDir()
+	rc := &retryCleaner{root: root, failIDs: map[string]bool{"0000000a": true}}
+	st := NewStore(root, 24*time.Hour, rc, slog.New(slog.NewTextHandler(os.Stderr, nil)), func() time.Time { return now })
+
+	victim := newOwnedSession(t, "0000000a", "userA", t0)
+	if err := st.Save(victim); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.Purge(context.Background(), "userA"); err == nil {
+		t.Fatal("expected the cleanup failure to surface")
+	}
+
+	st.mu.RLock()
+	_, pending := st.pendingCleanup[victim.ID()]
+	st.mu.RUnlock()
+	if !pending {
+		t.Fatal("a purged session whose cleanup failed must be registered in pendingCleanup for Sweep to retry")
+	}
+	if _, err := os.Stat(st.Dir(victim.ID())); err != nil {
+		t.Fatal("directory should still exist after a failed purge cleanup")
+	}
+
+	// The transient failure clears; the next Sweep should retry and succeed.
+	rc.mu.Lock()
+	rc.failIDs[victim.ID()] = false
+	rc.mu.Unlock()
+	st.Sweep(context.Background())
+
+	if _, err := os.Stat(st.Dir(victim.ID())); !os.IsNotExist(err) {
+		t.Fatalf("directory should be gone after the retry succeeds, stat err=%v", err)
+	}
+	st.mu.RLock()
+	_, stillPending := st.pendingCleanup[victim.ID()]
+	st.mu.RUnlock()
+	if stillPending {
+		t.Fatal("id should be dropped from pendingCleanup once the retry succeeds")
+	}
+}

@@ -277,6 +277,15 @@ func (s *Store) Unowned() int {
 // Cleanup already removes the session directory for both active and terminal
 // sessions (workspace.Manager.Cleanup unconditionally os.RemoveAlls it), so a
 // separate RemoveDir call would be redundant.
+//
+// A Cleanup failure does not drop the id from the store's bookkeeping: it is
+// routed through the same persistCleanupFailure path Finish/expire already
+// use, so Sweep retries it on its normal interval instead of stranding the
+// victim's on-disk session.json (and the owner field it contains) until the
+// process restarts and LoadAll rediscovers it. Re-registering the id is safe
+// even though the account is gone — the entry is owned by a now-deleted
+// user id, which no live identity.Scope can ever match, so it stays
+// invisible to every real caller while the retry is pending.
 func (s *Store) Purge(ctx context.Context, userID string) error {
 	if userID == "" {
 		return errors.New("session: purge requires a user id")
@@ -303,6 +312,8 @@ func (s *Store) Purge(ctx context.Context, userID string) error {
 	for _, sess := range victims {
 		if err := s.cleaner.Cleanup(ctx, sess); err != nil {
 			errs = append(errs, fmt.Errorf("session %s: %w", sess.ID(), err))
+			s.log.Warn("purge cleanup failed", slog.String("session", sess.ID()), slog.String("error", err.Error()))
+			s.persistCleanupFailure(sess.ID(), sess.Finished(s.now()))
 		}
 	}
 	return errors.Join(errs...)
