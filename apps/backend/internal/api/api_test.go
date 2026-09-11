@@ -733,6 +733,16 @@ func TestRepositorySearchIsTrimmed(t *testing.T) {
 	}
 }
 
+func TestChangesSearchTooLong(t *testing.T) {
+	f := newAPIFixture(t)
+	target := "/api/providers/fake/repositories/" + url.PathEscape("atlas/server") + "/changes?target=main&search=" + strings.Repeat("a", 201)
+	w := do(t, f.handler, "GET", target, "")
+	if w.Code != 400 {
+		t.Fatalf("status = %d, want 400, body %s", w.Code, w.Body.String())
+	}
+	assertErrorCode(t, w, "INVALID_SEARCH")
+}
+
 func TestListBranchesDefaultFirst(t *testing.T) {
 	f := newAPIFixture(t)
 	w := do(t, f.handler, "GET", "/api/providers/fake/repositories/"+url.PathEscape("atlas/server")+"/branches", "")

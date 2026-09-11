@@ -58,6 +58,10 @@ func (s *server) listChanges(w http.ResponseWriter, r *http.Request) {
 		_ = jsonapi.WriteError(w, http.StatusBadRequest, "INVALID_STATE", jsonapi.StatusTitle(http.StatusBadRequest), "Only state=merged is supported.")
 		return
 	}
+	search, ok := searchFrom(w, r)
+	if !ok {
+		return
+	}
 	repo, err := p.GetRepository(r.Context(), name)
 	if err != nil {
 		writeDomainError(w, s.deps.Log, err)
@@ -68,7 +72,7 @@ func (s *server) listChanges(w http.ResponseWriter, r *http.Request) {
 		target = repo.DefaultBranch()
 	}
 	page := pageFrom(r)
-	res, err := p.ListMergedChanges(r.Context(), repo, target, q.Get("search"), page)
+	res, err := p.ListMergedChanges(r.Context(), repo, target, search, page)
 	if err != nil {
 		writeDomainError(w, s.deps.Log, err)
 		return
