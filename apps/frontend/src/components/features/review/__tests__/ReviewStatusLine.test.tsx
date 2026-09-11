@@ -45,7 +45,14 @@ function file(path: string): ReviewFile {
   return {
     type: "review-files",
     id: path,
-    attributes: { path, previousPath: "", status: "modified", additions: 1, deletions: 1, binary: false },
+    attributes: {
+      path,
+      previousPath: "",
+      status: "modified",
+      additions: 1,
+      deletions: 1,
+      binary: false,
+    },
   };
 }
 
