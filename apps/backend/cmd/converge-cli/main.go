@@ -71,7 +71,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 3
 	}
 	ctx := context.Background()
-	application, err := newApp(ctx, os.Environ())
+	// converge-cli is standalone-only and never opens a database (design
+	// §11): its own call sites below are permanently identity.Standalone().
+	// config.Load builds its vars from a map populated by iterating env in
+	// order, so a later duplicate key wins -- appending this pins the mode
+	// to standalone even if CONVERGE_MODE=hosted leaked in from the calling
+	// process's environment (e.g. exec'd inside the hosted container).
+	application, err := newApp(ctx, append(os.Environ(), "CONVERGE_MODE=standalone"))
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "converge-cli: %v\n", err)
 		return exitCodeForError(err)

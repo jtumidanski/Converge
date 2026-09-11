@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -146,6 +148,51 @@ func withTestApp(t *testing.T, a *app.App) {
 	orig := newApp
 	newApp = func(_ context.Context, _ []string) (*app.App, error) { return a, nil }
 	t.Cleanup(func() { newApp = orig })
+}
+
+// TestRunStaysStandaloneWhenHostedModeLeaksIntoEnvironment proves the CLI
+// cannot be dragged into hosted mode by an inherited CONVERGE_MODE=hosted
+// (e.g. exec'd inside the hosted container): main.go pins the mode to
+// standalone before calling app.New, regardless of what os.Environ() carries.
+// It exercises the real newApp = app.New seam (not the test-app stub used by
+// the other run() tests) so the assertion is about main.go's own env
+// handling, not about a substituted *app.App. If the fix regressed, app.New
+// would either fail outright (missing CONVERGE_SECRET_KEY) or -- worse --
+// open the database at CONVERGE_DATABASE_PATH; this asserts the file is
+// never created, mirroring TestStandaloneCreatesNoDatabaseFile in
+// internal/app/app_test.go.
+func TestRunStaysStandaloneWhenHostedModeLeaksIntoEnvironment(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "would-be.db")
+	rawKey := make([]byte, 32)
+	if _, err := crand.Read(rawKey); err != nil {
+		t.Fatal(err)
+	}
+	// A valid CONVERGE_SECRET_KEY is included deliberately: without it,
+	// app.New would fail before ever reaching db.Open regardless of the fix
+	// (auth.NewSealer runs first), which would make this test pass whether
+	// or not main.go actually pins the mode -- i.e. it would not discriminate.
+	t.Setenv("CONVERGE_SECRET_KEY", base64.StdEncoding.EncodeToString(rawKey))
+	t.Setenv("CONVERGE_MODE", "hosted")
+	t.Setenv("CONVERGE_DATABASE_PATH", dbPath)
+	t.Setenv("PROVIDERS__GH__TYPE", "github")
+	t.Setenv("PROVIDERS__GH__TOKEN", "ghp_x")
+	t.Setenv("WORKSPACE_ROOT", filepath.Join(root, "ws"))
+	t.Setenv("REPOSITORY_CACHE_ROOT", filepath.Join(root, "cache"))
+	t.Setenv("LOG_LEVEL", "error")
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+
+	var stdout, stderr bytes.Buffer
+	// The provider id "gh" is configured but the repo/changes are made up:
+	// review.Service.Create rejects them before any network call, which is
+	// fine -- the assertion under test is about app.New's mode, not about a
+	// successful build.
+	_ = run([]string{"build", "--provider", "gh", "--repo", "acme/widgets", "--changes", "1"}, &stdout, &stderr)
+
+	if _, err := os.Stat(dbPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("CONVERGE_DATABASE_PATH exists after a hosted-leaked run: err=%v", err)
+	}
 }
 
 func TestRunVersion(t *testing.T) {
