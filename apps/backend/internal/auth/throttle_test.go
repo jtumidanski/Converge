@@ -271,6 +271,43 @@ func TestSweepRemovesElapsedRows(t *testing.T) {
 	}
 }
 
+// TestFailIsAtomicUnderConcurrency races Fail against itself for a single
+// key. If the read-modify-write were not atomic across the two store calls,
+// concurrent goroutines could read the same Failures value and each write
+// back n+1, losing an increment.
+func TestFailIsAtomicUnderConcurrency(t *testing.T) {
+	ctx := context.Background()
+	c := newClock()
+	store := newStore(t)
+	th := auth.NewThrottle(store, c.now)
+
+	const n = 20
+	var wg sync.WaitGroup
+	wg.Add(n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = th.Fail(ctx, "", "5.5.5.5")
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("Fail goroutine %d: %v", i, err)
+		}
+	}
+
+	got, err := store.Attempt(ctx, auth.ScopeIP, "5.5.5.5")
+	if err != nil {
+		t.Fatalf("Attempt: %v", err)
+	}
+	if got.Failures != n {
+		t.Fatalf("Failures = %d, want %d (lost update under concurrency)", got.Failures, n)
+	}
+}
+
 func TestLockoutMessageDoesNotDiscloseWhichKeyIsLocked(t *testing.T) {
 	ctx := context.Background()
 	c := newClock()

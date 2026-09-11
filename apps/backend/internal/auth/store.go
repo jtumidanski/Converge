@@ -372,6 +372,50 @@ func (s *Store) SaveAttempt(ctx context.Context, a Attempt) error {
 	return nil
 }
 
+// UpdateAttempt reads the counter for scope/key, applies fn, and writes the
+// result back, all inside one transaction. That makes the whole
+// read-modify-write atomic: with a single-connection pool, a concurrent
+// UpdateAttempt blocks for the connection until this transaction commits, so
+// two callers can never observe the same row and each write back a
+// conflicting increment. fn must be pure arithmetic — no I/O, nothing slow —
+// since it runs while the sole connection is held.
+func (s *Store) UpdateAttempt(ctx context.Context, scope, key string, fn func(Attempt) Attempt) (Attempt, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Attempt{}, fmt.Errorf("auth: begin update attempt: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	row := tx.QueryRowContext(ctx,
+		`SELECT scope, key, failures, window_start, locked_until FROM login_attempts WHERE scope = ? AND key = ?`,
+		scope, key)
+	var a Attempt
+	var windowStart, lockedUntil int64
+	switch err := row.Scan(&a.Scope, &a.Key, &a.Failures, &windowStart, &lockedUntil); {
+	case err == nil:
+		a.WindowStart, a.LockedUntil = fromUnix(windowStart), fromUnix(lockedUntil)
+	case errors.Is(err, sql.ErrNoRows):
+		a = Attempt{Scope: scope, Key: key}
+	default:
+		return Attempt{}, fmt.Errorf("auth: scan attempt for update: %w", err)
+	}
+
+	a = fn(a)
+	a.Scope, a.Key = scope, key
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO login_attempts (scope, key, failures, window_start, locked_until) VALUES (?,?,?,?,?)
+		 ON CONFLICT(scope, key) DO UPDATE SET failures = excluded.failures, window_start = excluded.window_start, locked_until = excluded.locked_until`,
+		a.Scope, a.Key, a.Failures, unix(a.WindowStart), unix(a.LockedUntil)); err != nil {
+		return Attempt{}, fmt.Errorf("auth: save attempt in update: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Attempt{}, fmt.Errorf("auth: commit update attempt: %w", err)
+	}
+	return a, nil
+}
+
 // ClearAttempt removes a throttle counter, e.g. after a successful login.
 func (s *Store) ClearAttempt(ctx context.Context, scope, key string) error {
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM login_attempts WHERE scope = ? AND key = ?`, scope, key); err != nil {

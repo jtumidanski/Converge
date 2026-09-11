@@ -70,34 +70,37 @@ func (t *Throttle) Check(ctx context.Context, userKey, ipKey string) error {
 }
 
 // Fail records one failure against each supplied key and engages or extends
-// the lockout when the key's threshold is met.
+// the lockout when the key's threshold is met. Each key's read-modify-write
+// runs inside Store.UpdateAttempt's single transaction, so two concurrent
+// Fail calls against the same key can never both read the same Failures
+// value and lose an increment.
 func (t *Throttle) Fail(ctx context.Context, userKey, ipKey string) error {
 	now := t.now()
 	for _, k := range t.keys(userKey, ipKey) {
-		a, err := t.store.Attempt(ctx, k.scope, k.key)
+		threshold := k.threshold
+		_, err := t.store.UpdateAttempt(ctx, k.scope, k.key, func(a Attempt) Attempt {
+			// The IP counter is windowed: 20 failures "within 15 minutes"
+			// (FR-7.3). The username counter is consecutive-failure based and
+			// resets only on success (FR-7.2), so it has no window.
+			if k.scope == ScopeIP && !a.WindowStart.IsZero() && now.Sub(a.WindowStart) > ipWindow {
+				a.Failures = 0
+				a.WindowStart = time.Time{}
+			}
+			if a.WindowStart.IsZero() {
+				a.WindowStart = now
+			}
+			a.Failures++
+			if a.Failures >= threshold {
+				// Doubling from the threshold, capped. By caller contract a
+				// failure is only recorded when the key is not locked
+				// (callers run Check first), so the exponent advances once
+				// per elapsed lockout, not once per request. Throttle itself
+				// does not enforce that contract.
+				a.LockedUntil = now.Add(lockoutFor(a.Failures - threshold))
+			}
+			return a
+		})
 		if err != nil {
-			return err
-		}
-		// The IP counter is windowed: 20 failures "within 15 minutes"
-		// (FR-7.3). The username counter is consecutive-failure based and
-		// resets only on success (FR-7.2), so it has no window.
-		if k.scope == ScopeIP && !a.WindowStart.IsZero() && now.Sub(a.WindowStart) > ipWindow {
-			a.Failures = 0
-			a.WindowStart = time.Time{}
-		}
-		if a.WindowStart.IsZero() {
-			a.WindowStart = now
-		}
-		a.Failures++
-		if a.Failures >= k.threshold {
-			// Doubling from the threshold, capped. A failure can only be
-			// recorded when the key is not locked (Check runs first), so the
-			// exponent advances once per elapsed lockout, not once per
-			// request.
-			a.LockedUntil = now.Add(lockoutFor(a.Failures - k.threshold))
-		}
-		a.Scope, a.Key = k.scope, k.key
-		if err := t.store.SaveAttempt(ctx, a); err != nil {
 			return err
 		}
 	}
