@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -13,11 +15,38 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jtumidanski/converge/internal/auth"
 	"github.com/jtumidanski/converge/internal/config"
 	"github.com/jtumidanski/converge/internal/identity"
 	"github.com/jtumidanski/converge/internal/mirror"
 	"github.com/jtumidanski/converge/internal/session"
 )
+
+// captureStderr redirects os.Stderr for the duration of fn and returns
+// everything written to it. app.New always logs to os.Stderr (see NewLogger's
+// call site in New), so this is the only way to observe its startup log lines
+// from outside the package without adding a test-only seam to production
+// code.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+	fn()
+	os.Stderr = orig
+	_ = w.Close()
+	out := <-done
+	return out
+}
 
 func TestCheckGitVersion(t *testing.T) {
 	for _, ok := range []string{"2.45.0", "2.49.1", "2.55.0", "3.0.0", "2.45.0.windows.1"} {
@@ -327,5 +356,215 @@ func TestNewWiresRepositoryCacheRoot(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, cacheRoot) {
 		t.Fatalf("mirror path %q is not rooted under configured REPOSITORY_CACHE_ROOT %q", got, cacheRoot)
+	}
+}
+
+// secretKey returns a valid CONVERGE_SECRET_KEY value: 32 random bytes,
+// base64 standard encoding.
+func secretKey(t *testing.T) string {
+	t.Helper()
+	raw := make([]byte, 32)
+	if _, err := crand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
+// TestStandaloneCreatesNoDatabaseFile proves standalone mode never opens or
+// creates a database, even when CONVERGE_DATABASE_PATH is set explicitly
+// (FR-1.5, acceptance criterion). Asserting a pass of the *pre-existing*
+// TestNewWiresEverything would not distinguish "no DB opened" from "DB opened
+// somewhere unrelated" -- this test checks the filesystem directly.
+func TestStandaloneCreatesNoDatabaseFile(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "would-be.db")
+	env := []string{
+		"PROVIDERS__GH__TYPE=github",
+		"PROVIDERS__GH__TOKEN=ghp_x",
+		"WORKSPACE_ROOT=" + filepath.Join(root, "ws"),
+		"REPOSITORY_CACHE_ROOT=" + filepath.Join(root, "cache"),
+		"LOG_LEVEL=error",
+		"CONVERGE_DATABASE_PATH=" + dbPath,
+	}
+	a, err := New(context.Background(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if a.DB != nil {
+		t.Error("App.DB is non-nil in standalone mode")
+	}
+	if a.Auth != nil {
+		t.Error("App.Auth is non-nil in standalone mode")
+	}
+	if _, err := os.Stat(dbPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("CONVERGE_DATABASE_PATH file exists in standalone mode: stat err = %v", err)
+	}
+	if _, err := os.Stat("/data/converge.db"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("default database path was touched: stat err = %v", err)
+	}
+}
+
+// TestHostedOpensAndMigratesTheDatabase proves hosted mode opens the
+// configured database file, runs the migration, and that Close closes the
+// handle.
+func TestHostedOpensAndMigratesTheDatabase(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "hosted.db")
+	env := []string{
+		"WORKSPACE_ROOT=" + filepath.Join(root, "ws"),
+		"REPOSITORY_CACHE_ROOT=" + filepath.Join(root, "cache"),
+		"LOG_LEVEL=error",
+		"CONVERGE_MODE=hosted",
+		"CONVERGE_SECRET_KEY=" + secretKey(t),
+		"CONVERGE_DATABASE_PATH=" + dbPath,
+	}
+	a, err := New(context.Background(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("database file was not created: %v", err)
+	}
+	if a.Auth == nil {
+		t.Fatal("App.Auth is nil in hosted mode")
+	}
+	var count int
+	if err := a.DB.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("schema_migrations has %d rows, want 1", count)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("Close returned %v", err)
+	}
+	if err := a.DB.Ping(); err == nil {
+		t.Error("database handle is still usable after Close")
+	}
+}
+
+// TestHostedWarnsAboutIgnoredProviderVariables proves the single WARN names
+// every ignored PROVIDERS__* variable and never the token value (FR-1.3).
+func TestHostedWarnsAboutIgnoredProviderVariables(t *testing.T) {
+	root := t.TempDir()
+	env := []string{
+		"WORKSPACE_ROOT=" + filepath.Join(root, "ws"),
+		"REPOSITORY_CACHE_ROOT=" + filepath.Join(root, "cache"),
+		"LOG_LEVEL=warn",
+		"CONVERGE_MODE=hosted",
+		"CONVERGE_SECRET_KEY=" + secretKey(t),
+		"CONVERGE_DATABASE_PATH=" + filepath.Join(root, "hosted.db"),
+		"PROVIDERS__GH__TYPE=github",
+		"PROVIDERS__GH__TOKEN=ghp_supersecrettoken",
+	}
+	out := captureStderr(t, func() {
+		a, err := New(context.Background(), env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer a.Close()
+	})
+	if !strings.Contains(out, "PROVIDERS__GH__TYPE") || !strings.Contains(out, "PROVIDERS__GH__TOKEN") {
+		t.Fatalf("warning does not name both ignored variables: %s", out)
+	}
+	if strings.Contains(out, "ghp_supersecrettoken") {
+		t.Fatalf("token value leaked into warning: %s", out)
+	}
+	warnCount := strings.Count(out, "level=WARN")
+	if warnCount != 1 {
+		t.Errorf("expected exactly one WARN line, found %d: %s", warnCount, out)
+	}
+}
+
+// TestHostedLogsTheStartupSummary asserts the "hosted mode ready" line
+// carries the mode, database path, user count, and unowned-session count
+// (NFR observability, FR-6.3).
+func TestHostedLogsTheStartupSummary(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "hosted.db")
+	env := []string{
+		"WORKSPACE_ROOT=" + filepath.Join(root, "ws"),
+		"REPOSITORY_CACHE_ROOT=" + filepath.Join(root, "cache"),
+		"LOG_LEVEL=info",
+		"CONVERGE_MODE=hosted",
+		"CONVERGE_SECRET_KEY=" + secretKey(t),
+		"CONVERGE_DATABASE_PATH=" + dbPath,
+	}
+	out := captureStderr(t, func() {
+		a, err := New(context.Background(), env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer a.Close()
+	})
+	if !strings.Contains(out, "mode=hosted") {
+		t.Errorf("startup log missing mode=hosted: %s", out)
+	}
+	if !strings.Contains(out, dbPath) {
+		t.Errorf("startup log missing database path: %s", out)
+	}
+	if !strings.Contains(out, "users=") {
+		t.Errorf("startup log missing user count: %s", out)
+	}
+	if !strings.Contains(out, "unowned_sessions=") {
+		t.Errorf("startup log missing unowned-session count: %s", out)
+	}
+}
+
+// TestHostedUsesTheDatabaseBackedResolver proves the hosted resolver seam is
+// genuinely installed: App.Resolver type-asserts to *auth.ProviderResolver,
+// and resolving for the standalone scope (no per-user configuration exists)
+// errors, which the static resolver never would.
+func TestHostedUsesTheDatabaseBackedResolver(t *testing.T) {
+	root := t.TempDir()
+	env := []string{
+		"WORKSPACE_ROOT=" + filepath.Join(root, "ws"),
+		"REPOSITORY_CACHE_ROOT=" + filepath.Join(root, "cache"),
+		"LOG_LEVEL=error",
+		"CONVERGE_MODE=hosted",
+		"CONVERGE_SECRET_KEY=" + secretKey(t),
+		"CONVERGE_DATABASE_PATH=" + filepath.Join(root, "hosted.db"),
+	}
+	a, err := New(context.Background(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	pr, ok := a.Resolver.(*auth.ProviderResolver)
+	if !ok {
+		t.Fatalf("App.Resolver is %T, want *auth.ProviderResolver", a.Resolver)
+	}
+	if pr != a.ProviderResolver {
+		t.Error("App.Resolver and App.ProviderResolver are not the same instance")
+	}
+	if _, err := a.Resolver.Resolve(context.Background(), identity.Standalone()); err == nil {
+		t.Error("expected the database-backed resolver to error for a scope with no configured providers")
+	}
+}
+
+// TestMissingSecretKeyIsAStartupError proves a missing CONVERGE_SECRET_KEY
+// fails startup before any database file is created (acceptance criterion).
+func TestMissingSecretKeyIsAStartupError(t *testing.T) {
+	root := t.TempDir()
+	env := []string{
+		"WORKSPACE_ROOT=" + filepath.Join(root, "ws"),
+		"REPOSITORY_CACHE_ROOT=" + filepath.Join(root, "cache"),
+		"LOG_LEVEL=error",
+		"CONVERGE_MODE=hosted",
+	}
+	_, err := New(context.Background(), env)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var cfgErr *config.Error
+	if !errors.As(err, &cfgErr) {
+		t.Fatalf("expected *config.Error, got %T: %v", err, err)
+	}
+	if cfgErr.Variable != "CONVERGE_SECRET_KEY" {
+		t.Errorf("error names %q, want CONVERGE_SECRET_KEY", cfgErr.Variable)
+	}
+	if _, statErr := os.Stat("/data/converge.db"); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("default database path was touched despite the missing key: stat err = %v", statErr)
 	}
 }

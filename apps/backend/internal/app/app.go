@@ -3,6 +3,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +16,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jtumidanski/converge/internal/auth"
 	"github.com/jtumidanski/converge/internal/config"
+	"github.com/jtumidanski/converge/internal/db"
 	"github.com/jtumidanski/converge/internal/gitx"
 	"github.com/jtumidanski/converge/internal/mirror"
 	"github.com/jtumidanski/converge/internal/provider"
@@ -55,6 +58,13 @@ type App struct {
 	Store      *session.Store
 	Service    *review.Service
 
+	// DB, Auth, and ProviderResolver are non-nil only in hosted mode. In
+	// standalone mode no database file is created, opened, or required
+	// (FR-1.5).
+	DB               *sql.DB
+	Auth             *auth.Service
+	ProviderResolver *auth.ProviderResolver
+
 	// Background tracks every goroutine that keeps using the git runner after
 	// the HTTP server has drained: the asynchronous builds started by
 	// review.Service and the session sweeper started by api.NewRouter. Wire it
@@ -73,6 +83,13 @@ func (a *App) Close() error {
 	if a.Runner != nil {
 		if err := a.Runner.Close(); err != nil {
 			errs = append(errs, err)
+		}
+	}
+	if a.DB != nil {
+		if err := a.DB.Close(); err != nil {
+			// Joined rather than returned early so a database close failure
+			// does not mask a runner or drain failure.
+			errs = append(errs, fmt.Errorf("close database: %w", err))
 		}
 	}
 	return errors.Join(errs...)
@@ -260,9 +277,13 @@ func New(ctx context.Context, env []string) (*App, error) {
 		log.Info("provider configured", slog.String("provider", pc.ID), slog.String("kind", string(pc.Kind)), slog.String("base_url", loggableURL(pc.BaseURL)))
 	}
 
-	// Standalone supplies a static resolver over the one env-built registry.
-	// app.New replaces this with auth.ProviderResolver in hosted mode.
-	resolver := provider.NewStaticResolver(registry)
+	// Standalone: one static registry for everyone, exactly as before.
+	var resolver = provider.NewStaticResolver(registry)
+	if len(cfg.IgnoredProviderVars) > 0 {
+		// One WARN, names only, never values (FR-1.3).
+		log.Warn("ignoring PROVIDERS__* in hosted mode; providers are configured per user",
+			slog.Any("variables", cfg.IgnoredProviderVars))
+	}
 
 	locks := &gitx.LockMap{}
 	// REPOSITORY_CACHE_ROOT flows straight from config into mirror.New: the
@@ -276,16 +297,95 @@ func New(ctx context.Context, env []string) (*App, error) {
 	background := &sync.WaitGroup{}
 	cleaner := review.NewCleaner(mirrors, workspaces, log)
 	store := session.NewStore(workspaces.Root(), cfg.SessionTTL, cleaner, log, time.Now)
+
+	var (
+		handle           *sql.DB
+		authService      *auth.Service
+		providerResolver *auth.ProviderResolver
+		// authDeps is filled in here but consumed below, after
+		// review.NewService exists: *review.Service is both the Purger and
+		// the ProviderUsage.
+		authDeps auth.ServiceDeps
+	)
+	if cfg.Mode == config.ModeHosted {
+		sealer, err := auth.NewSealer(cfg.SecretKey)
+		if err != nil {
+			_ = runner.Close()
+			return nil, err
+		}
+		if handle, err = db.Open(ctx, db.Options{Path: cfg.DatabasePath}); err != nil {
+			_ = runner.Close()
+			return nil, err
+		}
+		if err := db.Migrate(ctx, handle); err != nil {
+			_ = handle.Close()
+			_ = runner.Close()
+			return nil, err
+		}
+		authStore := auth.NewStore(handle)
+		providerResolver = auth.NewProviderResolver(authStore, sealer, httpClient, time.Now)
+		// The hosted resolver replaces the static one before review.Service
+		// is constructed, so nothing ever holds the wrong seam.
+		resolver = providerResolver
+		authDeps = auth.ServiceDeps{
+			Store:      authStore,
+			Sealer:     sealer,
+			Throttle:   auth.NewThrottle(authStore, time.Now),
+			Resolver:   providerResolver,
+			Verifier:   auth.NewHTTPVerifier(httpClient, time.Now),
+			Log:        log,
+			Now:        time.Now,
+			SessionTTL: cfg.LoginSessionTTL,
+			IdleTTL:    cfg.LoginIdleTTL,
+			// Purger and Usage are filled in below: both are *review.Service,
+			// which does not exist yet. This is the one place the cascade's
+			// three stores meet, and internal/app is the only package that
+			// may know about all three.
+		}
+	}
+
 	service := review.NewService(review.Deps{
 		Providers: resolver, Mirrors: mirrors, Workspaces: workspaces, Store: store,
 		Applicator: review.NewCherryPickApplicator(runner, log), Runner: runner, Log: log,
 		SessionTTL: cfg.SessionTTL, MaxConcurrentBuilds: cfg.MaxConcurrentBuilds, Now: time.Now,
 		Background: background,
 	})
+
+	if cfg.Mode == config.ModeHosted {
+		authDeps.Purger = service
+		authDeps.Usage = service
+		authService = auth.NewService(authDeps)
+	}
+
 	if err := store.LoadAll(ctx); err != nil {
+		if handle != nil {
+			_ = handle.Close()
+		}
 		_ = runner.Close()
 		return nil, err
 	}
-	log.Info("converge starting", slog.String("git_version", version), slog.Int("providers", len(cfg.Providers)))
-	return &App{Config: cfg, Log: log, Runner: runner, Registry: registry, Resolver: resolver, Mirrors: mirrors, Workspaces: workspaces, Store: store, Service: service, Background: background}, nil
+	log.Info("converge starting",
+		slog.String("git_version", version),
+		slog.String("mode", string(cfg.Mode)),
+		slog.Int("providers", len(cfg.Providers)))
+	if cfg.Mode == config.ModeHosted {
+		users, err := authService.CountUsers(ctx)
+		if err != nil {
+			_ = handle.Close()
+			_ = runner.Close()
+			return nil, err
+		}
+		// The unowned count is surfaced once so an operator can clean those
+		// sessions up by hand: in hosted mode they are invisible to every
+		// user and are never reassigned (FR-6.3).
+		log.Info("hosted mode ready",
+			slog.String("database", cfg.DatabasePath),
+			slog.Int("users", users),
+			slog.Int("unowned_sessions", store.Unowned()))
+	}
+	return &App{
+		Config: cfg, Log: log, Runner: runner, Registry: registry, Resolver: resolver,
+		Mirrors: mirrors, Workspaces: workspaces, Store: store, Service: service, Background: background,
+		DB: handle, Auth: authService, ProviderResolver: providerResolver,
+	}, nil
 }

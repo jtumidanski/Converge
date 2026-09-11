@@ -53,8 +53,33 @@ func buildDeps(application *app.App, ctx context.Context) api.Deps {
 		// HTTP server has drained. Registering it on the App's WaitGroup is
 		// what makes App.Close wait for it before it removes the git runner's
 		// shared HOME and hooks directories.
-		Background: application.Background,
+		Background:      application.Background,
+		Mode:            application.Config.Mode,
+		Auth:            application.Auth,
+		SecureCookies:   application.Config.SecureCookies,
+		TrustedProxy:    application.Config.TrustedProxy,
+		LoginSessionTTL: application.Config.LoginSessionTTL,
+		AuthSweep:       authSweep(application),
+		DBPing:          dbPing(application),
 	}
+}
+
+// authSweep and dbPing return nil in standalone mode, which is how the router
+// knows not to start the auth sweeper goroutine and not to add a database key
+// to /healthz. A nil func is the mode signal; api never checks the mode for
+// either.
+func authSweep(a *app.App) func(context.Context) error {
+	if a.Auth == nil {
+		return nil
+	}
+	return a.Auth.Sweep
+}
+
+func dbPing(a *app.App) func(context.Context) error {
+	if a.Auth == nil {
+		return nil
+	}
+	return a.Auth.Ping
 }
 
 func main() {
