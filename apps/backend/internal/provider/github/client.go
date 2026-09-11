@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,12 @@ const (
 	MaxScanCacheEntries = 64
 	// MaxPRCommits bounds how many commits GetChangeCommits will collect.
 	MaxPRCommits = 250
+	// maxSearchPages bounds the /user/repos walk used to answer a repository
+	// search. GitHub's search API is rate limited to 30 requests/minute across
+	// all search endpoints, which a debounced type-ahead can exhaust, and its
+	// visibility rules differ from /user/repos. Walking the same listing the
+	// unsearched browse view uses keeps the two consistent.
+	maxSearchPages = 10
 
 	providerPage = 100
 )
@@ -98,29 +105,61 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 	return linkNextRe.MatchString(h.Get("Link")), nil
 }
 
-// ListRepositories returns the caller's accessible repositories.
-func (c *Client) ListRepositories(ctx context.Context, page provider.Page) (provider.Slice[provider.Repository], error) {
-	page = page.Normalize()
-	q := url.Values{
+// repoListQuery builds the /user/repos query for one upstream page.
+func repoListQuery(perPage, page int) url.Values {
+	return url.Values{
 		"affiliation": {"owner,collaborator,organization_member"},
 		"sort":        {"full_name"},
-		"per_page":    {strconv.Itoa(page.Size)},
-		"page":        {strconv.Itoa(page.Number)},
+		"per_page":    {strconv.Itoa(perPage)},
+		"page":        {strconv.Itoa(page)},
 	}
-	var raw []repoJSON
-	hasNext, err := c.get(ctx, "/user/repos", q, &raw)
-	if err != nil {
-		return provider.Slice[provider.Repository]{}, err
-	}
-	items := make([]provider.Repository, 0, len(raw))
-	for _, r := range raw {
-		repo, err := r.toModel(c.id)
+}
+
+// ListRepositories returns the caller's accessible repositories, optionally
+// filtered by a case-insensitive substring of the full name.
+func (c *Client) ListRepositories(ctx context.Context, search string, page provider.Page) (provider.Slice[provider.Repository], error) {
+	page = page.Normalize()
+	if search == "" {
+		var raw []repoJSON
+		hasNext, err := c.get(ctx, "/user/repos", repoListQuery(page.Size, page.Number), &raw)
 		if err != nil {
 			return provider.Slice[provider.Repository]{}, err
 		}
+		items, err := toRepositories(raw, c.id)
+		if err != nil {
+			return provider.Slice[provider.Repository]{}, err
+		}
+		return provider.Slice[provider.Repository]{Items: items, HasNext: hasNext}, nil
+	}
+	needle := strings.ToLower(search)
+	return provider.FilterWalk(ctx, page, maxSearchPages,
+		func(ctx context.Context, upstream int) ([]provider.Repository, bool, error) {
+			var raw []repoJSON
+			hasNext, err := c.get(ctx, "/user/repos", repoListQuery(providerPage, upstream), &raw)
+			if err != nil {
+				return nil, false, err
+			}
+			items, err := toRepositories(raw, c.id)
+			if err != nil {
+				return nil, false, err
+			}
+			return items, hasNext, nil
+		},
+		func(r provider.Repository) bool {
+			return strings.Contains(strings.ToLower(r.FullName()), needle)
+		})
+}
+
+func toRepositories(raw []repoJSON, providerID string) ([]provider.Repository, error) {
+	items := make([]provider.Repository, 0, len(raw))
+	for _, r := range raw {
+		repo, err := r.toModel(providerID)
+		if err != nil {
+			return nil, err
+		}
 		items = append(items, repo)
 	}
-	return provider.Slice[provider.Repository]{Items: items, HasNext: hasNext}, nil
+	return items, nil
 }
 
 // GetRepository fetches a single repository by "owner/name".

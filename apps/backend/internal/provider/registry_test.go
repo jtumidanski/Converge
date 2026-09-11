@@ -13,7 +13,7 @@ func (s stubProvider) ID() string          { return s.id }
 func (s stubProvider) Kind() Kind          { return KindGitHub }
 func (s stubProvider) DisplayName() string { return s.id }
 func (s stubProvider) BaseURL() string     { return "" }
-func (s stubProvider) ListRepositories(context.Context, Page) (Slice[Repository], error) {
+func (s stubProvider) ListRepositories(context.Context, string, Page) (Slice[Repository], error) {
 	return Slice[Repository]{}, nil
 }
 func (s stubProvider) GetRepository(context.Context, string) (Repository, error) {

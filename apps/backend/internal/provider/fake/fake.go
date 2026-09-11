@@ -88,13 +88,17 @@ func (p *Provider) takeErr() error {
 	return err
 }
 
-func (p *Provider) ListRepositories(_ context.Context, page provider.Page) (provider.Slice[provider.Repository], error) {
+func (p *Provider) ListRepositories(_ context.Context, search string, page provider.Page) (provider.Slice[provider.Repository], error) {
 	if err := p.takeErr(); err != nil {
 		return provider.Slice[provider.Repository]{}, err
 	}
+	needle := strings.ToLower(search)
 	p.mu.Lock()
 	all := make([]provider.Repository, 0, len(p.repos))
 	for _, r := range p.repos {
+		if needle != "" && !strings.Contains(strings.ToLower(r.FullName()), needle) {
+			continue
+		}
 		all = append(all, r)
 	}
 	p.mu.Unlock()

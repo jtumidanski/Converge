@@ -63,9 +63,17 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 	return h.Get("X-Next-Page"), nil
 }
 
-func (c *Client) ListRepositories(ctx context.Context, page provider.Page) (provider.Slice[provider.Repository], error) {
+// ListRepositories lists projects the token is a member of, optionally
+// filtered by search. search_namespaces widens GitLab's match from the
+// project path alone to the full namespace path, so "atlas/serv" finds
+// "atlas/server".
+func (c *Client) ListRepositories(ctx context.Context, search string, page provider.Page) (provider.Slice[provider.Repository], error) {
 	page = page.Normalize()
 	q := url.Values{"membership": {"true"}, "order_by": {"path"}, "sort": {"asc"}, "per_page": {strconv.Itoa(page.Size)}, "page": {strconv.Itoa(page.Number)}}
+	if search != "" {
+		q.Set("search", search)
+		q.Set("search_namespaces", "true")
+	}
 	var raw []projectJSON
 	next, err := c.get(ctx, "/projects", q, &raw)
 	if err != nil {

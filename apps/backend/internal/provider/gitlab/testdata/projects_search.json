@@ -1,0 +1,3 @@
+[
+  {"name":"server","path":"server","path_with_namespace":"atlas/server","namespace":{"full_path":"atlas"},"default_branch":"main","web_url":"https://gitlab.test/atlas/server","http_url_to_repo":"https://gitlab.test/atlas/server.git"}
+]

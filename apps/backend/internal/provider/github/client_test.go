@@ -88,14 +88,14 @@ func newClient(t *testing.T, srv *httptest.Server) *Client {
 func TestListRepositoriesPagination(t *testing.T) {
 	srv, _ := newServer(t)
 	c := newClient(t, srv)
-	s, err := c.ListRepositories(context.Background(), provider.Page{Number: 1, Size: 2})
+	s, err := c.ListRepositories(context.Background(), "", provider.Page{Number: 1, Size: 2})
 	if err != nil || len(s.Items) != 2 || !s.HasNext {
 		t.Fatalf("page1: %v %+v", err, s)
 	}
 	if s.Items[0].FullName() != "atlas/server" || s.Items[0].DefaultBranch() != "main" || s.Items[0].CloneURL() != "https://github.com/atlas/server.git" || s.Items[1].DefaultBranch() != "develop" {
 		t.Errorf("mapping: %+v", s.Items)
 	}
-	s, err = c.ListRepositories(context.Background(), provider.Page{Number: 2, Size: 2})
+	s, err = c.ListRepositories(context.Background(), "", provider.Page{Number: 2, Size: 2})
 	if err != nil || s.HasNext {
 		t.Fatalf("page2: %v %+v", err, s)
 	}
@@ -220,4 +220,59 @@ func numbers(items []provider.ChangeRequest) []int {
 		out[i] = it.Number()
 	}
 	return out
+}
+
+func TestListRepositoriesSearchWalksPages(t *testing.T) {
+	var calls []call
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, call{r.URL.Path, r.URL.RawQuery})
+		if r.URL.Path != "/user/repos" {
+			w.WriteHeader(404)
+			return
+		}
+		if r.URL.Query().Get("per_page") != "100" {
+			t.Errorf("per_page = %s, want 100", r.URL.Query().Get("per_page"))
+		}
+		if r.URL.Query().Get("page") == "1" {
+			w.Header().Set("Link", `<http://x/user/repos?page=2>; rel="next"`)
+			_, _ = w.Write(fixture(t, "repos_p1.json"))
+			return
+		}
+		_, _ = w.Write(fixture(t, "repos_p2.json"))
+	}))
+	defer srv.Close()
+	c := New("gh", "GitHub", srv.URL, config.NewSecret("ghp_test"), srv.Client(), nil)
+
+	got, err := c.ListRepositories(context.Background(), "serv", provider.Page{Number: 1, Size: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(got.Items))
+	for _, r := range got.Items {
+		names = append(names, r.FullName())
+	}
+	if len(names) != 2 || names[0] != "atlas/server" || names[1] != "atlas/server-tools" {
+		t.Fatalf("names = %v, want [atlas/server atlas/server-tools]", names)
+	}
+	if got.HasNext {
+		t.Errorf("hasNext = true, want false (only two matches exist)")
+	}
+	if len(calls) != 2 {
+		t.Errorf("upstream calls = %d, want 2", len(calls))
+	}
+}
+
+func TestListRepositoriesWithoutSearchIsUnchanged(t *testing.T) {
+	srv, calls := newServer(t)
+	defer srv.Close()
+	c := New("gh", "GitHub", srv.URL, config.NewSecret("ghp_test"), srv.Client(), nil)
+	if _, err := c.ListRepositories(context.Background(), "", provider.Page{Number: 1, Size: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("calls = %v, want exactly one", *calls)
+	}
+	if !strings.Contains((*calls)[0].query, "per_page=30") {
+		t.Errorf("query = %s, want per_page=30 (the caller's page size, not the walk size)", (*calls)[0].query)
+	}
 }

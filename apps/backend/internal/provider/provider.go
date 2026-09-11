@@ -12,7 +12,10 @@ type GitProvider interface {
 	Kind() Kind
 	DisplayName() string
 	BaseURL() string
-	ListRepositories(ctx context.Context, page Page) (Slice[Repository], error)
+	// ListRepositories lists the token's repositories. search is an
+	// already-trimmed, already-length-checked substring filter; empty means
+	// no filter. Validation belongs to the API layer, not here.
+	ListRepositories(ctx context.Context, search string, page Page) (Slice[Repository], error)
 	GetRepository(ctx context.Context, fullName string) (Repository, error)
 	ListMergedChanges(ctx context.Context, repo Repository, targetBranch, search string, page Page) (Slice[ChangeRequest], error)
 	GetChange(ctx context.Context, repo Repository, number int) (ChangeRequest, error)
