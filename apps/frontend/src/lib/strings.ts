@@ -61,4 +61,8 @@ export const strings = {
   noRepositoriesMatchSearch: "No repositories match that search.",
   pickProviderAndRepository: "Pick a provider and a repository.",
   reviewsPageDescription: "Resume a review in progress, or start a new one.",
+  columnStatus: "Status",
+  columnProgress: "Progress",
+  columnExpires: "Expires",
+  columnActions: "Actions",
 } as const;

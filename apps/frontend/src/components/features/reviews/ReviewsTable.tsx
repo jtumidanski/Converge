@@ -1,6 +1,13 @@
 import { ErrorBanner } from "@/components/common/ErrorBanner";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { NewReviewRow } from "@/components/features/reviews/NewReviewRow";
 import { ReviewRow } from "@/components/features/reviews/ReviewRow";
 import { messageFor } from "@/lib/api/errors";
@@ -47,6 +54,15 @@ export function ReviewsTable({
         {strings.reviews}
       </div>
       <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="sr-only">{strings.columnStatus}</TableHead>
+            <TableHead className="sr-only">{strings.repository}</TableHead>
+            <TableHead className="sr-only">{strings.columnProgress}</TableHead>
+            <TableHead className="sr-only">{strings.columnExpires}</TableHead>
+            <TableHead className="sr-only">{strings.columnActions}</TableHead>
+          </TableRow>
+        </TableHeader>
         <TableBody>
           {loading
             ? [0, 1, 2].map((row) => (

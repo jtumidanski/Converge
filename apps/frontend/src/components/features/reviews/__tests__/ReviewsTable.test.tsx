@@ -57,6 +57,19 @@ function renderTable(props: Partial<React.ComponentProps<typeof ReviewsTable>> =
 afterEach(() => localStorage.clear());
 
 describe("ReviewsTable", () => {
+  it("exposes an accessible column header for every column", () => {
+    renderTable();
+    const headers = screen.getAllByRole("columnheader");
+    expect(headers).toHaveLength(5);
+    expect(headers.map((header) => header.textContent)).toEqual([
+      "Status",
+      "Repository",
+      "Progress",
+      "Expires",
+      "Actions",
+    ]);
+  });
+
   it("shows the repository, change numbers, and totals", () => {
     renderTable();
     expect(screen.getByText("atlas/server")).toBeInTheDocument();
