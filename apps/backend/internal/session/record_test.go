@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -278,4 +279,59 @@ func TestFromRecordErrorPaths(t *testing.T) {
 			t.Error("unparseable createdAt accepted by json.Unmarshal")
 		}
 	})
+}
+
+// TestOwnerRoundTripsThroughTheRecord is the FR-6.1 contract.
+func TestOwnerRoundTripsThroughTheRecord(t *testing.T) {
+	sess := newSession(t)
+	owned, err := NewBuilder().SetID(sess.ID()).SetProviderID(sess.ProviderID()).
+		SetRepository(sess.Repository()).SetBaseBranch(sess.BaseBranch()).
+		SetRequestedChanges(sess.RequestedChanges()).SetCreatedAt(sess.CreatedAt()).
+		SetTTL(time.Hour).SetOwner("abcdef0123456789").Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	record := ToRecord(owned)
+	if record.Owner != "abcdef0123456789" {
+		t.Fatalf("Record.Owner = %q, want the owner", record.Owner)
+	}
+	back, err := FromRecord(record)
+	if err != nil {
+		t.Fatalf("FromRecord: %v", err)
+	}
+	if back.Owner() != "abcdef0123456789" {
+		t.Fatalf("round-tripped Owner() = %q", back.Owner())
+	}
+}
+
+// TestRecordWithoutOwnerDecodesToEmpty is the no-migration guarantee (PRD
+// §6.3): a session.json written by an older build must parse unchanged.
+func TestRecordWithoutOwnerDecodesToEmpty(t *testing.T) {
+	sess := newSession(t)
+	blob, err := json.Marshal(ToRecord(sess))
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if bytes.Contains(blob, []byte(`"owner"`)) {
+		t.Fatalf("an unowned record must omit the owner field: %s", blob)
+	}
+	var decoded Record
+	if err := json.Unmarshal(blob, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if decoded.Owner != "" {
+		t.Fatalf("Owner = %q, want empty", decoded.Owner)
+	}
+	if decoded.SchemaVersion != SchemaVersion {
+		t.Fatalf("SchemaVersion = %d, want %d", decoded.SchemaVersion, SchemaVersion)
+	}
+}
+
+// TestSchemaVersionIsStillOne: an added optional field that absent-decodes to
+// its zero value is not a schema break, and bumping the version would force a
+// migration path for records that need none (design §6).
+func TestSchemaVersionIsStillOne(t *testing.T) {
+	if SchemaVersion != 1 {
+		t.Fatalf("SchemaVersion = %d, want 1", SchemaVersion)
+	}
 }

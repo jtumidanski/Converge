@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jtumidanski/converge/internal/gitx"
+	"github.com/jtumidanski/converge/internal/identity"
 	"github.com/jtumidanski/converge/internal/jsonapi"
 	"github.com/jtumidanski/converge/internal/mirror"
 	"github.com/jtumidanski/converge/internal/provider"
@@ -485,7 +486,7 @@ func TestNewRouterStartsAndStopsSweeper(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if got, ok := store.Get(id); ok && got.Status() == session.StatusExpired {
+		if got, ok := store.Get(id, identity.Standalone()); ok && got.Status() == session.StatusExpired {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -511,7 +512,7 @@ func TestNewRouterStartsAndStopsSweeper(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(150 * time.Millisecond)
-	if got, ok := store.Get(id2); !ok || got.Status() != session.StatusCreating {
+	if got, ok := store.Get(id2, identity.Standalone()); !ok || got.Status() != session.StatusCreating {
 		t.Errorf("session swept after BuildContext was cancelled: %+v", got)
 	}
 }

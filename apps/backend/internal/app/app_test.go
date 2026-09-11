@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jtumidanski/converge/internal/config"
+	"github.com/jtumidanski/converge/internal/identity"
 	"github.com/jtumidanski/converge/internal/session"
 )
 
@@ -76,7 +77,7 @@ func TestNewWiresEverything(t *testing.T) {
 	if _, ok := a.Registry.Get("gh"); !ok {
 		t.Error("provider not registered")
 	}
-	if len(a.Store.List()) != 0 {
+	if len(a.Store.List(identity.Standalone())) != 0 {
 		t.Error("unexpected sessions")
 	}
 	if _, err := New(context.Background(), []string{"APP_PORT=1"}); err == nil {
@@ -294,7 +295,7 @@ func TestNewLoadAllRestoresExistingSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = second.Close() }()
-	if _, ok := second.Store.Get(sess.ID()); !ok {
+	if _, ok := second.Store.Get(sess.ID(), identity.Standalone()); !ok {
 		t.Fatal("pre-existing session on disk was not visible after New; Store.LoadAll did not run")
 	}
 }

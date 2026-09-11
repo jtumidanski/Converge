@@ -42,6 +42,10 @@ type Record struct {
 	CreatedAt        time.Time              `json:"createdAt"`
 	UpdatedAt        time.Time              `json:"updatedAt"`
 	ExpiresAt        time.Time              `json:"expiresAt"`
+	// Owner is absent in records written by a standalone deployment and by
+	// builds older than hosted mode. omitempty plus absent-decodes-to-zero is
+	// why no data migration is required (PRD §6.3).
+	Owner string `json:"owner,omitempty"`
 }
 
 func optional(s string) *string {
@@ -78,6 +82,7 @@ func ToRecord(s Session) Record {
 		CreatedAt:        s.createdAt,
 		UpdatedAt:        s.updatedAt,
 		ExpiresAt:        s.expiresAt,
+		Owner:            s.owner,
 	}
 	for _, rc := range s.resolved {
 		r.ResolvedChanges = append(r.ResolvedChanges, ResolvedChangeRecord{
@@ -101,7 +106,7 @@ func FromRecord(r Record) (Session, error) {
 	}
 	ttl := r.ExpiresAt.Sub(r.CreatedAt)
 	s, err := NewBuilder().SetID(r.ID).SetProviderID(r.ProviderID).SetRepository(r.Repository).SetBaseBranch(r.BaseBranch).
-		SetRequestedChanges(r.RequestedChanges).SetCreatedAt(r.CreatedAt).SetTTL(ttl).Build()
+		SetRequestedChanges(r.RequestedChanges).SetCreatedAt(r.CreatedAt).SetTTL(ttl).SetOwner(r.Owner).Build()
 	if err != nil {
 		return Session{}, fmt.Errorf("session %s: %w", r.ID, err)
 	}

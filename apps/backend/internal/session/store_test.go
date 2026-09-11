@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jtumidanski/converge/internal/identity"
 )
 
 type fakeCleaner struct {
@@ -62,16 +64,16 @@ func TestSaveGetListAtomic(t *testing.T) {
 			t.Fatal("temp file left behind")
 		}
 	}
-	got, ok := st.Get("0123abcd")
+	got, ok := st.Get("0123abcd", identity.Standalone())
 	if !ok || got.Repository() != "atlas/server" {
 		t.Fatal("Get")
 	}
-	if _, ok := st.Get("ffffffff"); ok {
+	if _, ok := st.Get("ffffffff", identity.Standalone()); ok {
 		t.Fatal("unknown found")
 	}
 	other, _ := NewBuilder().SetID("aaaaaaaa").SetProviderID("gh").SetRepository("a/b").SetBaseBranch("main").SetRequestedChanges([]int{1}).SetCreatedAt(t0.Add(time.Hour)).SetTTL(time.Hour).Build()
 	_ = st.Save(other)
-	list := st.List()
+	list := st.List(identity.Standalone())
 	if len(list) != 2 || list[0].ID() != "aaaaaaaa" {
 		t.Fatalf("List = %v", list)
 	}
@@ -82,27 +84,27 @@ func TestFinishIsIdempotentAndCleans(t *testing.T) {
 	st, fc := newStore(t, &now)
 	_ = st.Save(newSession(t))
 	ctx := context.Background()
-	if err := st.Finish(ctx, "0123abcd"); err != nil {
+	if err := st.Finish(ctx, "0123abcd", identity.Standalone()); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := st.Get("0123abcd"); got.Status() != StatusFinished {
+	if got, _ := st.Get("0123abcd", identity.Standalone()); got.Status() != StatusFinished {
 		t.Fatalf("status = %s", got.Status())
 	}
-	if err := st.Finish(ctx, "0123abcd"); err != nil {
+	if err := st.Finish(ctx, "0123abcd", identity.Standalone()); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Finish(ctx, "ffffffff"); err != nil {
+	if err := st.Finish(ctx, "ffffffff", identity.Standalone()); err != nil {
 		t.Fatal("unknown must be a no-op")
 	}
 	if len(fc.cleaned) != 1 {
 		t.Fatalf("cleanups = %v", fc.cleaned)
 	}
-	if len(st.List()) != 0 {
+	if len(st.List(identity.Standalone())) != 0 {
 		t.Fatal("finished session still listed")
 	}
 	fc.fail = errors.New("boom")
 	_ = st.Save(newSession(t))
-	if err := st.Finish(ctx, "0123abcd"); err == nil {
+	if err := st.Finish(ctx, "0123abcd", identity.Standalone()); err == nil {
 		t.Fatal("cleanup failure must surface")
 	}
 }
@@ -128,11 +130,11 @@ func TestLoadAllRecovery(t *testing.T) {
 	if err := st.LoadAll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := st.Get("bbbbbbbb")
+	b, _ := st.Get("bbbbbbbb", identity.Standalone())
 	if b.Status() != StatusFailed || b.Error() == nil || b.Error().Code != CodeInterrupted {
 		t.Errorf("fresh creating session: %+v", b)
 	}
-	a, _ := st.Get("0123abcd")
+	a, _ := st.Get("0123abcd", identity.Standalone())
 	if a.Status() != StatusExpired {
 		t.Errorf("old session status = %s", a.Status())
 	}
@@ -161,7 +163,7 @@ func TestSweepExpires(t *testing.T) {
 	}
 	now = t0.Add(25 * time.Hour)
 	st.Sweep(context.Background())
-	if got, _ := st.Get("0123abcd"); got.Status() != StatusExpired || len(fc.cleaned) != 1 {
+	if got, _ := st.Get("0123abcd", identity.Standalone()); got.Status() != StatusExpired || len(fc.cleaned) != 1 {
 		t.Fatalf("not expired: %s %v", got.Status(), fc.cleaned)
 	}
 	st.Sweep(context.Background())
@@ -209,10 +211,10 @@ func TestStoreConcurrentAccess(t *testing.T) {
 					t.Errorf("save %s: %v", id, err)
 					return
 				}
-				if _, ok := st.Get(id); !ok {
+				if _, ok := st.Get(id, identity.Standalone()); !ok {
 					t.Errorf("get %s: not found immediately after save", id)
 				}
-				_ = st.List()
+				_ = st.List(identity.Standalone())
 				_ = st.Corrupted(id)
 			}
 		}(w)
@@ -233,8 +235,8 @@ func TestStoreConcurrentAccess(t *testing.T) {
 	st.Sweep(context.Background()) // final sweep, expires everything
 	<-sweepDone
 
-	if len(st.List()) != 0 {
-		t.Fatalf("expected every session expired after the final sweep, got %d active", len(st.List()))
+	if len(st.List(identity.Standalone())) != 0 {
+		t.Fatalf("expected every session expired after the final sweep, got %d active", len(st.List(identity.Standalone())))
 	}
 }
 
@@ -273,7 +275,7 @@ func TestRunSweeperSweepsOnIntervalAndStopsOnCancel(t *testing.T) {
 		t.Fatal("RunSweeper did not sweep the expired session in time")
 	}
 
-	if got, ok := st.Get("0123abcd"); !ok || got.Status() != StatusExpired {
+	if got, ok := st.Get("0123abcd", identity.Standalone()); !ok || got.Status() != StatusExpired {
 		t.Fatalf("session not expired after sweep: %+v ok=%v", got, ok)
 	}
 
@@ -324,7 +326,7 @@ func TestGetVsCorrupted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, ok := st.Get(corruptID); ok {
+	if _, ok := st.Get(corruptID, identity.Standalone()); ok {
 		t.Fatal("corrupt id should not be in the live index")
 	}
 	if !st.Corrupted(corruptID) {
@@ -335,8 +337,8 @@ func TestGetVsCorrupted(t *testing.T) {
 	}
 
 	// A never-existed id and a corrupt id both fail Get identically...
-	_, neverOK := st.Get("ffffffff")
-	_, corruptOK := st.Get(corruptID)
+	_, neverOK := st.Get("ffffffff", identity.Standalone())
+	_, corruptOK := st.Get(corruptID, identity.Standalone())
 	if neverOK != corruptOK {
 		t.Fatal("Get should not distinguish the two by itself (that's what Corrupted is for)")
 	}
@@ -353,7 +355,7 @@ func TestGetVsCorrupted(t *testing.T) {
 	if st.Corrupted(corruptID) {
 		t.Fatal("Corrupted should clear once the id is saved successfully")
 	}
-	if _, ok := st.Get(corruptID); !ok {
+	if _, ok := st.Get(corruptID, identity.Standalone()); !ok {
 		t.Fatal("healed id should now be found")
 	}
 }
@@ -396,7 +398,7 @@ func TestFinishCleanupFailurePersistsTerminalStatus(t *testing.T) {
 	_ = st.Save(newSession(t))
 	fc.fail = errors.New("boom")
 
-	if err := st.Finish(context.Background(), "0123abcd"); err == nil {
+	if err := st.Finish(context.Background(), "0123abcd", identity.Standalone()); err == nil {
 		t.Fatal("expected cleanup failure to surface")
 	}
 
@@ -449,13 +451,13 @@ func TestSweepRetriesFailedCleanupUntilSuccess(t *testing.T) {
 	_ = st.Save(newSession(t))
 	ctx := context.Background()
 
-	if err := st.Finish(ctx, "0123abcd"); err == nil {
+	if err := st.Finish(ctx, "0123abcd", identity.Standalone()); err == nil {
 		t.Fatal("expected first cleanup attempt to fail")
 	}
-	if got, ok := st.Get("0123abcd"); !ok || got.Status() != StatusFinished {
+	if got, ok := st.Get("0123abcd", identity.Standalone()); !ok || got.Status() != StatusFinished {
 		t.Fatalf("status not durable after failed cleanup: %+v ok=%v", got, ok)
 	}
-	if len(st.List()) != 0 {
+	if len(st.List(identity.Standalone())) != 0 {
 		t.Fatal("terminal session must never be visible as active")
 	}
 	if _, err := os.Stat(st.Dir("0123abcd")); err != nil {
@@ -471,10 +473,10 @@ func TestSweepRetriesFailedCleanupUntilSuccess(t *testing.T) {
 	if _, err := os.Stat(st.Dir("0123abcd")); !os.IsNotExist(err) {
 		t.Fatalf("directory should be gone after the retry succeeds, stat err=%v", err)
 	}
-	if got, ok := st.Get("0123abcd"); !ok || got.Status() != StatusFinished {
+	if got, ok := st.Get("0123abcd", identity.Standalone()); !ok || got.Status() != StatusFinished {
 		t.Fatalf("status changed across retry: %+v ok=%v", got, ok)
 	}
-	if len(st.List()) != 0 {
+	if len(st.List(identity.Standalone())) != 0 {
 		t.Fatal("terminal session must never be visible as active")
 	}
 	st.mu.RLock()
@@ -498,7 +500,7 @@ func TestSweepRetryCleanupIsBounded(t *testing.T) {
 	_ = st.Save(newSession(t))
 	ctx := context.Background()
 
-	if err := st.Finish(ctx, "0123abcd"); err == nil {
+	if err := st.Finish(ctx, "0123abcd", identity.Standalone()); err == nil {
 		t.Fatal("expected cleanup to fail")
 	}
 
@@ -525,10 +527,10 @@ func TestSweepRetryCleanupIsBounded(t *testing.T) {
 		t.Fatalf("pendingCleanup must not accumulate state, got %d entries", pendingSize)
 	}
 
-	if got, ok := st.Get("0123abcd"); !ok || got.Status() != StatusFinished {
+	if got, ok := st.Get("0123abcd", identity.Standalone()); !ok || got.Status() != StatusFinished {
 		t.Fatalf("terminal status must remain durable even after giving up: %+v ok=%v", got, ok)
 	}
-	if len(st.List()) != 0 {
+	if len(st.List(identity.Standalone())) != 0 {
 		t.Fatal("terminal session must never be visible as active, even after giving up on retries")
 	}
 }
@@ -576,7 +578,7 @@ func TestSaveActiveGuardsTerminalTransitions(t *testing.T) {
 	if got.Stage() != "applying:1" {
 		t.Fatalf("returned stage = %q", got.Stage())
 	}
-	if indexed, _ := st.Get(s.ID()); indexed.Stage() != "applying:1" {
+	if indexed, _ := st.Get(s.ID(), identity.Standalone()); indexed.Stage() != "applying:1" {
 		t.Fatalf("indexed stage = %q, want the written one", indexed.Stage())
 	}
 	if stage := readStage(t, st, s.ID()); stage != "applying:1" {
@@ -595,7 +597,7 @@ func TestSaveActiveGuardsTerminalTransitions(t *testing.T) {
 		t.Errorf("SaveActive created a directory for an id that is not in the index: %v", err)
 	}
 
-	if err := st.Finish(context.Background(), s.ID()); err != nil {
+	if err := st.Finish(context.Background(), s.ID(), identity.Standalone()); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := st.SaveActive(staged.WithStage("diffing", t0.Add(2*time.Minute)))
@@ -605,7 +607,7 @@ func TestSaveActiveGuardsTerminalTransitions(t *testing.T) {
 	if stored.Status() != StatusFinished {
 		t.Fatalf("returned session status = %s, want the stored FINISHED", stored.Status())
 	}
-	if indexed, _ := st.Get(s.ID()); indexed.Status() != StatusFinished {
+	if indexed, _ := st.Get(s.ID(), identity.Standalone()); indexed.Status() != StatusFinished {
 		t.Fatalf("indexed status = %s, want FINISHED", indexed.Status())
 	}
 	if stage := readStage(t, st, s.ID()); stage == "diffing" {
@@ -676,7 +678,7 @@ func TestSaveActiveIsAtomicWithConcurrentFinish(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			finishErr = st.Finish(context.Background(), s.ID())
+			finishErr = st.Finish(context.Background(), s.ID(), identity.Standalone())
 		}()
 	}
 	_, saveErr := st.SaveActive(staged)
@@ -691,7 +693,7 @@ func TestSaveActiveIsAtomicWithConcurrentFinish(t *testing.T) {
 	if saveErr != nil && !errors.Is(saveErr, ErrTerminal) {
 		t.Fatalf("SaveActive = %v, want nil or ErrTerminal", saveErr)
 	}
-	indexed, ok := st.Get(s.ID())
+	indexed, ok := st.Get(s.ID(), identity.Standalone())
 	if !ok || indexed.Status() != StatusFinished {
 		t.Fatalf("indexed = %+v ok=%v, want FINISHED", indexed.Status(), ok)
 	}
@@ -728,7 +730,7 @@ func TestSaveActiveRacesFinish(t *testing.T) {
 		// than racing its start; the invariant below must hold for every
 		// possible interleaving, this one just makes the interesting one likely.
 		time.Sleep(2 * time.Millisecond)
-		finishErr = st.Finish(context.Background(), s.ID())
+		finishErr = st.Finish(context.Background(), s.ID(), identity.Standalone())
 	}()
 	wg.Wait()
 
@@ -738,11 +740,191 @@ func TestSaveActiveRacesFinish(t *testing.T) {
 	if saveErr != nil && !errors.Is(saveErr, ErrTerminal) {
 		t.Fatalf("SaveActive = %v, want nil or ErrTerminal", saveErr)
 	}
-	indexed, ok := st.Get(s.ID())
+	indexed, ok := st.Get(s.ID(), identity.Standalone())
 	if !ok || indexed.Status() != StatusFinished {
 		t.Fatalf("indexed = %+v ok=%v, want FINISHED", indexed.Status(), ok)
 	}
 	if _, err := os.Stat(st.Dir(s.ID())); !os.IsNotExist(err) {
 		t.Fatalf("the session directory of a FINISHED session survives (%v): the write landed after Cleanup and resurrected it", err)
+	}
+}
+
+// newOwnedSession builds a valid CREATING session for id, owned by owner (an
+// empty owner is the valid standalone value).
+func newOwnedSession(t *testing.T, id, owner string, createdAt time.Time) Session {
+	t.Helper()
+	s, err := NewBuilder().SetID(id).SetProviderID("gh").SetRepository("a/b").SetBaseBranch("main").
+		SetRequestedChanges([]int{1}).SetCreatedAt(createdAt).SetTTL(24 * time.Hour).SetOwner(owner).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// TestListIsScopedByOwner is the FR-6.3/FR-6.4 contract on List: standalone
+// sees everything including unowned records, while a scoped user sees only
+// their own and never an unowned one.
+func TestListIsScopedByOwner(t *testing.T) {
+	now := t0
+	st, _ := newStore(t, &now)
+	unowned := newOwnedSession(t, "00000001", "", t0)
+	a1 := newOwnedSession(t, "0000000a", "userA", t0.Add(time.Minute))
+	a2 := newOwnedSession(t, "0000000b", "userA", t0.Add(2*time.Minute))
+	b1 := newOwnedSession(t, "0000000c", "userB", t0.Add(3*time.Minute))
+	for _, s := range []Session{unowned, a1, a2, b1} {
+		if err := st.Save(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	all := st.List(identity.Standalone())
+	if len(all) != 4 {
+		t.Fatalf("Standalone List = %d, want 4", len(all))
+	}
+
+	aList := st.List(identity.ForUser("userA"))
+	if len(aList) != 2 {
+		t.Fatalf("userA List = %d, want 2", len(aList))
+	}
+	for _, s := range aList {
+		if s.Owner() != "userA" {
+			t.Errorf("userA list contains %s owned by %q", s.ID(), s.Owner())
+		}
+		if s.ID() == unowned.ID() {
+			t.Fatal("unowned session visible to userA")
+		}
+	}
+
+	bList := st.List(identity.ForUser("userB"))
+	if len(bList) != 1 || bList[0].Owner() != "userB" {
+		t.Fatalf("userB List = %v", bList)
+	}
+	if bList[0].ID() == unowned.ID() {
+		t.Fatal("unowned session visible to userB")
+	}
+}
+
+// TestGetIsScopedByOwner is the FR-4.2 contract on Get: a session owned by
+// another user or unowned in hosted mode is reported exactly as absent.
+func TestGetIsScopedByOwner(t *testing.T) {
+	now := t0
+	st, _ := newStore(t, &now)
+	a := newOwnedSession(t, "0000000a", "userA", t0)
+	unowned := newOwnedSession(t, "00000001", "", t0)
+	if err := st.Save(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(unowned); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := st.Get(a.ID(), identity.ForUser("userB")); ok {
+		t.Fatal("userB should not see userA's session")
+	}
+	if _, ok := st.Get(a.ID(), identity.ForUser("userA")); !ok {
+		t.Fatal("userA should see their own session")
+	}
+	if _, ok := st.Get(a.ID(), identity.Standalone()); !ok {
+		t.Fatal("standalone should see an owned session")
+	}
+	if _, ok := st.Get(unowned.ID(), identity.ForUser("userA")); ok {
+		t.Fatal("userA should not see an unowned session")
+	}
+}
+
+// TestFinishIsScopedByOwner proves Finish delegates its visibility decision
+// to Get: a cross-user Finish is a silent no-op that leaves the session
+// active and its workspace untouched.
+func TestFinishIsScopedByOwner(t *testing.T) {
+	now := t0
+	st, fc := newStore(t, &now)
+	a := newOwnedSession(t, "0000000a", "userA", t0)
+	if err := st.Save(a); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	if err := st.Finish(ctx, a.ID(), identity.ForUser("userB")); err != nil {
+		t.Fatalf("cross-user finish should be a no-op, got %v", err)
+	}
+	if got, ok := st.Get(a.ID(), identity.ForUser("userA")); !ok || got.Status() != StatusCreating {
+		t.Fatalf("session should still be active: %+v ok=%v", got, ok)
+	}
+	if len(fc.cleaned) != 0 {
+		t.Fatalf("cleanup ran for a cross-user finish: %v", fc.cleaned)
+	}
+	if _, err := os.Stat(st.Dir(a.ID())); err != nil {
+		t.Fatal("workspace should be intact after a cross-user finish")
+	}
+
+	if err := st.Finish(ctx, a.ID(), identity.ForUser("userA")); err != nil {
+		t.Fatalf("own finish: %v", err)
+	}
+	if got, ok := st.Get(a.ID(), identity.Standalone()); !ok || got.Status() != StatusFinished {
+		t.Fatalf("session should be finished: %+v ok=%v", got, ok)
+	}
+}
+
+// TestUnownedCount proves Unowned counts exactly the indexed sessions that
+// carry no owner.
+func TestUnownedCount(t *testing.T) {
+	now := t0
+	st, _ := newStore(t, &now)
+	u1 := newOwnedSession(t, "00000001", "", t0)
+	u2 := newOwnedSession(t, "00000002", "", t0)
+	a := newOwnedSession(t, "0000000a", "userA", t0)
+	for _, s := range []Session{u1, u2, a} {
+		if err := st.Save(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := st.Unowned(); got != 2 {
+		t.Fatalf("Unowned = %d, want 2", got)
+	}
+}
+
+// TestPurgeRemovesEveryOwnedSession is the FR-2.7 account-deletion contract:
+// every session owned by the purged user is removed, active or terminal,
+// along with its workspace, while another user's session is untouched.
+func TestPurgeRemovesEveryOwnedSession(t *testing.T) {
+	now := t0
+	root := t.TempDir()
+	cleaner := &dirCleaner{root: root}
+	st := NewStore(root, 24*time.Hour, cleaner, slog.New(slog.NewTextHandler(os.Stderr, nil)), func() time.Time { return now })
+
+	active := newOwnedSession(t, "0000000a", "userA", t0)
+	if err := st.Save(active); err != nil {
+		t.Fatal(err)
+	}
+	finished := newOwnedSession(t, "0000000b", "userA", t0)
+	finished = finished.Finished(now)
+	if err := st.Save(finished); err != nil {
+		t.Fatal(err)
+	}
+	b := newOwnedSession(t, "0000000c", "userB", t0)
+	if err := st.Save(b); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.Purge(context.Background(), "userA"); err != nil {
+		t.Fatalf("Purge: %v", err)
+	}
+
+	if _, err := os.Stat(st.Dir(active.ID())); !os.IsNotExist(err) {
+		t.Errorf("active A directory survives: %v", err)
+	}
+	if _, err := os.Stat(st.Dir(finished.ID())); !os.IsNotExist(err) {
+		t.Errorf("finished A directory survives: %v", err)
+	}
+	for _, s := range st.List(identity.Standalone()) {
+		if s.Owner() == "userA" {
+			t.Errorf("purged owner still listed: %s", s.ID())
+		}
+	}
+	if _, ok := st.Get(b.ID(), identity.Standalone()); !ok {
+		t.Fatal("userB's session should survive purge")
+	}
+	if _, err := os.Stat(st.Dir(b.ID())); err != nil {
+		t.Errorf("userB's directory should survive purge: %v", err)
 	}
 }

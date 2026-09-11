@@ -100,6 +100,7 @@ type Session struct {
 	createdAt        time.Time
 	updatedAt        time.Time
 	expiresAt        time.Time
+	owner            string
 }
 
 func (s Session) ID() string           { return s.id }
@@ -128,6 +129,13 @@ func (s Session) Totals() *diff.Totals {
 	t := *s.totals
 	return &t
 }
+
+// Owner is the id of the user who created this review, empty in standalone
+// mode. The on-disk layout does not change — WORKSPACE_ROOT/<session-id>/ in
+// both modes — because isolation is enforced by the store and the API, not by
+// directory nesting, so existing sessions keep resuming after an upgrade
+// (FR-6.2).
+func (s Session) Owner() string { return s.owner }
 
 // IsExpired reports whether now is past the expiry.
 func (s Session) IsExpired(now time.Time) bool { return !now.Before(s.expiresAt) }

@@ -24,6 +24,7 @@ func (b *Builder) SetBaseBranch(v string) *Builder      { b.s.baseBranch = v; re
 func (b *Builder) SetRequestedChanges(v []int) *Builder { b.changes = v; return b }
 func (b *Builder) SetCreatedAt(v time.Time) *Builder    { b.s.createdAt = v; return b }
 func (b *Builder) SetTTL(v time.Duration) *Builder      { b.ttl = v; return b }
+func (b *Builder) SetOwner(v string) *Builder           { b.s.owner = v; return b }
 
 // Build validates every invariant.
 func (b *Builder) Build() (Session, error) {

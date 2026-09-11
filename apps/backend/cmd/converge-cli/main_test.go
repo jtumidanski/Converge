@@ -16,6 +16,7 @@ import (
 	"github.com/jtumidanski/converge/internal/app"
 	"github.com/jtumidanski/converge/internal/buildinfo"
 	"github.com/jtumidanski/converge/internal/gitx"
+	"github.com/jtumidanski/converge/internal/identity"
 	"github.com/jtumidanski/converge/internal/mirror"
 	"github.com/jtumidanski/converge/internal/provider"
 	"github.com/jtumidanski/converge/internal/provider/fake"
@@ -239,7 +240,7 @@ func TestRunBuildCleanupRemovesWorkspace(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &record); err != nil {
 		t.Fatalf("stdout is not the session record JSON: %v", err)
 	}
-	got, ok := a.Store.Get(record.ID)
+	got, ok := a.Store.Get(record.ID, identity.Standalone())
 	if !ok || got.Status() != session.StatusFinished {
 		t.Fatalf("session not finished after --cleanup: ok=%v status=%v", ok, got.Status())
 	}

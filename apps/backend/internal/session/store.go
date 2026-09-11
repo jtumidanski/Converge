@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jtumidanski/converge/internal/identity"
 	"github.com/jtumidanski/converge/internal/workspace"
 )
 
@@ -169,18 +171,26 @@ func (s *Store) writeRecord(sess Session) error {
 	return nil
 }
 
-// Get returns the indexed session. Its bool return only ever means "this id
-// is currently in the live index" — it deliberately cannot distinguish "id
-// never existed" from "id existed but LoadAll found its session.json
-// unreadable or invalid". That distinction is not lost, though: LoadAll
-// records every such id (see Corrupted), so a caller building a 404 vs. 500
-// response can check Corrupted(id) after a failed Get without any change to
-// this signature.
-func (s *Store) Get(id string) (Session, bool) {
+// Get returns the session if it exists and is visible to scope. A session
+// owned by another user, or an unowned session in hosted mode, is reported
+// exactly as a session that does not exist — which is what makes a cross-user
+// request answer 404 rather than 403 (FR-4.2), through the existing
+// ErrNotFound -> 404 mapping, with no handler making that decision.
+//
+// Its bool return only ever means "this id is currently in the live index
+// and visible to scope" — it deliberately cannot distinguish "id never
+// existed" from "id existed but LoadAll found its session.json unreadable or
+// invalid". That distinction is not lost, though: LoadAll records every such
+// id (see Corrupted), so a caller building a 404 vs. 500 response can check
+// Corrupted(id) after a failed Get without any change to this signature.
+func (s *Store) Get(id string, scope identity.Scope) (Session, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	sess, ok := s.index[id]
-	return sess, ok
+	if !ok || !scope.Matches(sess.Owner()) {
+		return Session{}, false
+	}
+	return sess, true
 }
 
 // Corrupted reports whether id was found, at the most recent LoadAll, to
@@ -197,12 +207,12 @@ func (s *Store) Corrupted(id string) bool {
 	return ok
 }
 
-// List returns active sessions, newest first.
-func (s *Store) List() []Session {
+// List returns the active sessions visible to scope, newest first.
+func (s *Store) List(scope identity.Scope) []Session {
 	s.mu.RLock()
 	out := make([]Session, 0, len(s.index))
 	for _, sess := range s.index {
-		if sess.IsActive() {
+		if sess.IsActive() && scope.Matches(sess.Owner()) {
 			out = append(out, sess)
 		}
 	}
@@ -225,8 +235,8 @@ func (s *Store) List() []Session {
 // Sweep, so a permanently-successful-on-retry Cleanup eventually still
 // removes the workspace, and a restart before that happens sees the true
 // FINISHED status rather than a stale active one.
-func (s *Store) Finish(ctx context.Context, id string) error {
-	sess, ok := s.Get(id)
+func (s *Store) Finish(ctx context.Context, id string, scope identity.Scope) error {
+	sess, ok := s.Get(id, scope)
 	if !ok || sess.Status() == StatusFinished {
 		return nil
 	}
@@ -240,6 +250,62 @@ func (s *Store) Finish(ctx context.Context, id string) error {
 		return fmt.Errorf("session %s: cleanup: %w", id, err)
 	}
 	return nil
+}
+
+// Unowned reports how many indexed sessions carry no owner. In hosted mode
+// these are invisible to every user (FR-6.3); app.New logs the count once at
+// startup so an operator can clean them up by hand. They are never swept
+// early and never reassigned.
+func (s *Store) Unowned() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, sess := range s.index {
+		if sess.Owner() == "" {
+			n++
+		}
+	}
+	return n
+}
+
+// Purge removes every session owned by userID — active or terminal — along
+// with its workspace. This is the account-deletion path (FR-2.7) and is
+// deliberately not scope-checked: the caller has already verified the
+// account's password. Errors from individual cleanups are joined rather than
+// short-circuited, so one stuck workspace does not strand the rest.
+//
+// Cleanup already removes the session directory for both active and terminal
+// sessions (workspace.Manager.Cleanup unconditionally os.RemoveAlls it), so a
+// separate RemoveDir call would be redundant.
+func (s *Store) Purge(ctx context.Context, userID string) error {
+	if userID == "" {
+		return errors.New("session: purge requires a user id")
+	}
+	s.mu.Lock()
+	ids := make([]string, 0)
+	victims := make([]Session, 0)
+	for id, sess := range s.index {
+		if sess.Owner() == userID {
+			ids = append(ids, id)
+			victims = append(victims, sess)
+		}
+	}
+	for _, id := range ids {
+		delete(s.index, id)
+		delete(s.corrupt, id)
+		delete(s.pendingCleanup, id)
+	}
+	s.mu.Unlock()
+
+	// Cleanup runs outside the lock: it does filesystem and git work and
+	// would otherwise serialise the whole store behind it, matching Finish.
+	var errs []error
+	for _, sess := range victims {
+		if err := s.cleaner.Cleanup(ctx, sess); err != nil {
+			errs = append(errs, fmt.Errorf("session %s: %w", sess.ID(), err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // expire marks EXPIRED and cleans up. The terminal status is written to the

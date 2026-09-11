@@ -89,7 +89,9 @@ func NewService(d Deps) *Service {
 }
 
 // Get returns a session by ID.
-func (s *Service) Get(id string) (session.Session, bool) { return s.deps.Store.Get(id) }
+func (s *Service) Get(id string) (session.Session, bool) {
+	return s.deps.Store.Get(id, identity.Standalone())
+}
 
 // Corrupted reports whether id was recorded, at the store's most recent
 // LoadAll, as having an unreadable or invalid session.json — see
@@ -99,11 +101,11 @@ func (s *Service) Get(id string) (session.Session, bool) { return s.deps.Store.G
 func (s *Service) Corrupted(id string) bool { return s.deps.Store.Corrupted(id) }
 
 // List returns active sessions, newest first.
-func (s *Service) List() []session.Session { return s.deps.Store.List() }
+func (s *Service) List() []session.Session { return s.deps.Store.List(identity.Standalone()) }
 
 // Finish cleans up and marks the session FINISHED. It is idempotent.
 func (s *Service) Finish(ctx context.Context, id string) error {
-	if err := s.deps.Store.Finish(ctx, id); err != nil {
+	if err := s.deps.Store.Finish(ctx, id, identity.Standalone()); err != nil {
 		return fmt.Errorf("review: finish %s: %w", id, err)
 	}
 	return nil
@@ -210,7 +212,7 @@ func (s *Service) StartBuild(ctx context.Context, id string) {
 // pipeline outcome with final.ID() == "" (its status is likewise the empty
 // string, never READY), and the condition is logged at Error level.
 func (s *Service) Build(ctx context.Context, id string) (final session.Session) {
-	sess, ok := s.deps.Store.Get(id)
+	sess, ok := s.deps.Store.Get(id, identity.Standalone())
 	if !ok {
 		s.deps.Log.Error("build requested for unknown session", slog.String("session", id))
 		return session.Session{}
@@ -561,7 +563,7 @@ func (s *Service) head(ctx context.Context, repoDir, id string) (string, error) 
 
 // Files returns the stored summary for a READY session.
 func (s *Service) Files(id string) ([]diff.FileSummary, error) {
-	sess, ok := s.deps.Store.Get(id)
+	sess, ok := s.deps.Store.Get(id, identity.Standalone())
 	if !ok {
 		return nil, fmt.Errorf("review: session %s: %w", id, session.ErrNotFound)
 	}
@@ -573,7 +575,7 @@ func (s *Service) Files(id string) ([]diff.FileSummary, error) {
 
 // FileDiff renders one file's diff on demand.
 func (s *Service) FileDiff(ctx context.Context, id, path string) (diff.FileDiff, error) {
-	sess, ok := s.deps.Store.Get(id)
+	sess, ok := s.deps.Store.Get(id, identity.Standalone())
 	if !ok {
 		return diff.FileDiff{}, fmt.Errorf("review: session %s: %w", id, session.ErrNotFound)
 	}
@@ -594,7 +596,7 @@ func (s *Service) FileDiff(ctx context.Context, id, path string) (diff.FileDiff,
 
 // CombinedDiffPath returns the on-disk combined.diff for a READY session.
 func (s *Service) CombinedDiffPath(id string) (string, error) {
-	sess, ok := s.deps.Store.Get(id)
+	sess, ok := s.deps.Store.Get(id, identity.Standalone())
 	if !ok {
 		return "", fmt.Errorf("review: session %s: %w", id, session.ErrNotFound)
 	}
