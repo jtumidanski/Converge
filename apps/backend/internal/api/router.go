@@ -79,6 +79,7 @@ func NewRouter(d Deps) http.Handler {
 	// TestRepositoriesAndChanges, which posts url.PathEscape("atlas/server").
 	mux.HandleFunc("GET /api/providers/{provider}/repositories/{repo}", s.getRepository)
 	mux.HandleFunc("GET /api/providers/{provider}/repositories/{repo}/changes", s.listChanges)
+	mux.HandleFunc("GET /api/providers/{provider}/repositories/{repo}/branches", s.listBranches)
 	mux.HandleFunc("POST /api/reviews", s.createReview)
 	mux.HandleFunc("GET /api/reviews", s.listReviews)
 	mux.HandleFunc("GET /api/reviews/{id}", s.getReview)
