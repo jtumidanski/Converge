@@ -8,6 +8,7 @@ import { BaseBranchSelect } from "@/components/features/changes/BaseBranchSelect
 import { ChangeFilters } from "@/components/features/changes/ChangeFilters";
 import { ChangeTable, buildRows } from "@/components/features/changes/ChangeTable";
 import { SelectionBar } from "@/components/features/changes/SelectionBar";
+import { useBranches } from "@/lib/hooks/api/useBranches";
 import { useChanges } from "@/lib/hooks/api/useChanges";
 import { useRepository } from "@/lib/hooks/api/useRepositories";
 import { useCreateReview } from "@/lib/hooks/api/useReviews";
@@ -79,6 +80,18 @@ export function SelectChangesPage() {
   // discarded once the default branch resolves.
   const changes = useChanges(providerId, repository, changeParams, !repositoryQuery.isPending);
   const createReview = useCreateReview();
+  // BaseBranchSelect (Task 19) has no isError prop by design (Ruling 16): it
+  // cannot distinguish a fetch failure from a genuinely empty branch list, so
+  // it silently falls back to the pinned default plus a typed value either
+  // way. The create page owns surfacing the failure itself, via its own
+  // query against the same cache key BaseBranchSelect's closed-state query
+  // would use.
+  const branches = useBranches(
+    providerId,
+    repository,
+    {},
+    Boolean(providerId) && Boolean(repository),
+  );
 
   // FR-16: the create page records the recent, not the drawer, so a deep link
   // counts the same as a trip through the drawer.
@@ -234,6 +247,13 @@ export function SelectChangesPage() {
         total={items.length}
       />
       {createError ? <ErrorBanner title="Could not start the review" detail={createError} /> : null}
+      {branches.isError ? (
+        <ErrorBanner
+          title={strings.couldNotLoadBranches}
+          detail={messageFor(branches.error, "Try again in a moment.")}
+          onRetry={() => void branches.refetch()}
+        />
+      ) : null}
       {changes.isError ? (
         <ErrorBanner
           title={`Could not load ${strings.includedChanges.toLowerCase()}`}

@@ -213,4 +213,146 @@ describe("SelectChangesPage", () => {
     ).toEqual([1, 2]);
     expect(await screen.findByText("review page")).toBeInTheDocument();
   });
+
+  it("shows the API detail when creating a review fails", async () => {
+    seed();
+    server.use(
+      http.post("/api/reviews", () =>
+        HttpResponse.json(
+          {
+            errors: [
+              {
+                status: "400",
+                code: "INCOMPATIBLE_TARGETS",
+                title: "Bad Request",
+                detail: "All selected PRs/MRs must target the same base branch.",
+              },
+            ],
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+    renderPage();
+    await screen.findByText("ATLAS-1 first");
+    await userEvent.click(screen.getByText("ATLAS-1 first"));
+    await userEvent.click(screen.getByRole("button", { name: /build review/i }));
+    expect(await screen.findByText(/same base branch/i)).toBeInTheDocument();
+    expect(screen.queryByText("review page")).not.toBeInTheDocument();
+  });
+
+  it("shows a banner when the branches fetch fails, without silently falling back", async () => {
+    seed();
+    server.use(
+      http.get("/api/providers/gl/repositories/:repo/branches", () =>
+        HttpResponse.json(
+          { errors: [{ status: "500", code: "GIT_FAILURE", title: "Server Error" }] },
+          { status: 500 },
+        ),
+      ),
+    );
+    renderPage();
+    expect(await screen.findByText("Could not load branches")).toBeInTheDocument();
+  });
+
+  it("waits for the repository lookup to settle before requesting changes, and targets the default branch", async () => {
+    seed();
+    renderPage();
+    await screen.findByText("ATLAS-1 first");
+    expect(changeQueries).toHaveLength(1);
+    expect(changeQueries[0]).toBe("main");
+  });
+
+  it("still fetches and renders changes untargeted when the repository lookup fails", async () => {
+    server.use(
+      http.get("/api/providers/gl/repositories/:repo", () =>
+        HttpResponse.json(
+          { errors: [{ status: "404", code: "NOT_FOUND", title: "Not Found" }] },
+          { status: 404 },
+        ),
+      ),
+      http.get("/api/providers/gl/repositories/:repo/branches", () =>
+        HttpResponse.json(listDoc([])),
+      ),
+      http.get("/api/providers/gl/repositories/:repo/changes", ({ request }) => {
+        changeQueries.push(new URL(request.url).searchParams.get("target") ?? "");
+        expect(new URL(request.url).searchParams.get("target")).toBeNull();
+        return HttpResponse.json(
+          listDoc([change(1, "ATLAS-1 first", "feat/a")], { number: 1, size: 30, hasNext: false }),
+        );
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText("ATLAS-1 first")).toBeInTheDocument();
+  });
+
+  it("shows a guidance banner instead of fetching when the provider or repository is missing from the URL", () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <ThemeProvider>
+          <MemoryRouter initialEntries={["/select?provider=gl"]}>
+            <AppShell>
+              <Routes>
+                <Route path="/select" element={<SelectChangesPage />} />
+              </Routes>
+            </AppShell>
+          </MemoryRouter>
+        </ThemeProvider>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText(/missing selection/i)).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("wires Pagination to page state and gates Next on hasNext", async () => {
+    const pagesRequested: string[] = [];
+    server.use(
+      http.get("/api/providers", () =>
+        HttpResponse.json(
+          listDoc([
+            {
+              type: "providers" as const,
+              id: "gl",
+              attributes: { kind: "gitlab", displayName: "GitLab", baseUrl: "https://gitlab.test" },
+            },
+          ]),
+        ),
+      ),
+      http.get("/api/providers/gl/repositories/:repo", () =>
+        HttpResponse.json(
+          oneDoc("repositories", "atlas/server", {
+            name: "server",
+            namespace: "atlas",
+            defaultBranch: "main",
+            webUrl: "https://gitlab.test/atlas/server",
+          }),
+        ),
+      ),
+      http.get("/api/providers/gl/repositories/:repo/branches", () =>
+        HttpResponse.json(listDoc([])),
+      ),
+      http.get("/api/providers/gl/repositories/:repo/changes", ({ request }) => {
+        const url = new URL(request.url);
+        pagesRequested.push(url.searchParams.get("page") ?? "1");
+        return HttpResponse.json(
+          listDoc([change(1, "ATLAS-1 first", "feat/a")], { number: 1, size: 30, hasNext: true }),
+        );
+      }),
+    );
+    renderPage();
+    await screen.findByText("ATLAS-1 first");
+    const next = screen.getByRole("button", { name: /next/i });
+    expect(next).toBeEnabled();
+    await userEvent.click(next);
+    await waitFor(() => expect(pagesRequested).toContain("2"));
+    expect(screen.getByText(/page 2/i)).toBeInTheDocument();
+    const previous = screen.getByRole("button", { name: /previous/i });
+    expect(previous).toBeEnabled();
+    await userEvent.click(previous);
+    await waitFor(() => expect(screen.getByText(/page 1/i)).toBeInTheDocument());
+    expect(previous).toBeDisabled();
+  });
 });

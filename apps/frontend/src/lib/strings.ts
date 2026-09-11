@@ -84,4 +84,5 @@ export const strings = {
   deselectAll: "Deselect all",
   changesCount: (count: number) => `${count} changes`,
   changesHiddenBy: (count: number) => `${count} changes hidden by “${strings.hideDependencyBots}”`,
+  couldNotLoadBranches: "Could not load branches",
 } as const;
