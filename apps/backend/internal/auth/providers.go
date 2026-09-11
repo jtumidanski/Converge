@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -50,7 +49,7 @@ func (s *Service) CreateProvider(ctx context.Context, userID string, in Provider
 		return UserProvider{}, err
 	}
 	if in.Token == "" {
-		return UserProvider{}, errors.New("auth: token is required")
+		return UserProvider{}, fmt.Errorf("auth: token is required: %w", ErrInvalidInput)
 	}
 	if in.Validate {
 		if err := s.deps.Verifier.Verify(ctx, kind, baseURL, config.NewSecret(in.Token)); err != nil {
@@ -189,7 +188,7 @@ func normalizeKind(k config.Kind) (config.Kind, error) {
 	case config.KindGitLab:
 		return config.KindGitLab, nil
 	default:
-		return "", fmt.Errorf("auth: kind must be github or gitlab")
+		return "", fmt.Errorf("auth: kind must be github or gitlab: %w", ErrInvalidInput)
 	}
 }
 

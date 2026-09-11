@@ -3,7 +3,6 @@ package auth
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -62,7 +61,7 @@ func ValidateUsername(username string) error {
 // CreateProvider, and only on a genuine uniqueness conflict.
 func ValidateSlug(slug string) error {
 	if !slugRe.MatchString(slug) {
-		return errors.New("auth: a slug is 1 to 32 characters of lowercase letters, digits, and hyphens, starting with a letter or digit")
+		return fmt.Errorf("auth: a slug is 1 to 32 characters of lowercase letters, digits, and hyphens, starting with a letter or digit: %w", ErrInvalidInput)
 	}
 	return nil
 }
@@ -84,13 +83,13 @@ func NormalizeBaseURL(kind config.Kind, raw string) (string, error) {
 	base := strings.TrimSpace(raw)
 	if base == "" {
 		if kind == config.KindGitLab {
-			return "", fmt.Errorf("auth: base url is required for gitlab providers")
+			return "", fmt.Errorf("auth: base url is required for gitlab providers: %w", ErrInvalidInput)
 		}
 		base = defaultGitHubBaseURL
 	}
 	u, err := url.Parse(base)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return "", fmt.Errorf("auth: base url must be an absolute http(s) URL")
+		return "", fmt.Errorf("auth: base url must be an absolute http(s) URL: %w", ErrInvalidInput)
 	}
 	return strings.TrimRight(base, "/"), nil
 }

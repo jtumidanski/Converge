@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -404,6 +405,130 @@ func TestDeleteRefusesWhileInUse(t *testing.T) {
 		t.Fatalf("status = %d, want 409; body=%s", del.Code, del.Body.String())
 	}
 	assertErrorCode(t, del, "PROVIDER_IN_USE")
+}
+
+// outageVerifier simulates an unreachable provider host or an upstream
+// failure that is not an authorisation verdict: exactly the shape
+// httpVerifier.Verify returns for anything other than provider.ErrAuth
+// (auth/verify.go). It must not be confused with a bad credential.
+type outageVerifier struct{}
+
+func (outageVerifier) Verify(context.Context, config.Kind, string, config.Secret) error {
+	return fmt.Errorf("auth: verify provider credential: %w", errors.New("dial tcp: connection refused"))
+}
+
+// TestCreateVerifierOutageAnswers5xx proves that a verifier failure which is
+// not provider.ErrAuth (an outage, not a rejected credential) reports as a
+// server fault, not as 422/VALIDATION_ERROR, and does not leak the
+// underlying error text. TestCreateDefaultsValidateToTrue already proves the
+// companion path is not regressed: a genuine auth.Error{CodeProviderUnauthorized}
+// from the verifier still answers the contracted 422/PROVIDER_UNAUTHORIZED.
+func TestCreateVerifierOutageAnswers5xx(t *testing.T) {
+	svc, _ := newSettingsTestAuthService(t, outageVerifier{}, &toggledUsage{})
+	h := settingsTestRouter(config.ModeHosted, svc)
+	cookie, _ := registerAndCookie(t, h, "mallory")
+
+	w := doAuth(t, h, http.MethodPost, "/api/settings/providers",
+		createProviderBody("github", "x", "github", "", "ghp_0123456789012345678901234567890123456789", nil), cookie)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body=%s", w.Code, w.Body.String())
+	}
+	assertErrorCode(t, w, "GIT_FAILURE")
+	if strings.Contains(w.Body.String(), "connection refused") {
+		t.Fatalf("response leaked the underlying error: %s", w.Body.String())
+	}
+}
+
+// TestProviderSettingsErrorFailsClosedOnUnrecognisedErrors unit-tests
+// writeProviderSettingsError directly against genuine errors produced by the
+// real auth.Store and auth.Sealer (a closed-handle DB fault and a decrypt
+// fault), rather than synthetic stand-ins, proving both server-fault
+// families the audit named answer 5xx with no leaked error text.
+func TestProviderSettingsErrorFailsClosedOnUnrecognisedErrors(t *testing.T) {
+	s := &server{deps: Deps{Log: testLogger()}}
+
+	assert5xxNoLeak := func(t *testing.T, err error) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.writeProviderSettingsError(w, err)
+		if w.Code < 500 {
+			t.Fatalf("status = %d, want 5xx; body=%s", w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), err.Error()) {
+			t.Fatalf("response leaked the underlying error %q: %s", err.Error(), w.Body.String())
+		}
+	}
+
+	t.Run("store fault", func(t *testing.T) {
+		handle, err := db.Open(context.Background(), db.Options{Path: filepath.Join(t.TempDir(), "converge.db")})
+		if err != nil {
+			t.Fatalf("db.Open: %v", err)
+		}
+		if err := db.Migrate(context.Background(), handle); err != nil {
+			t.Fatalf("db.Migrate: %v", err)
+		}
+		if err := handle.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		store := auth.NewStore(handle)
+		storeErr := store.CreateUserProvider(context.Background(), auth.UserProvider{})
+		if storeErr == nil {
+			t.Fatal("expected a store fault against a closed handle")
+		}
+		assert5xxNoLeak(t, storeErr)
+	})
+
+	t.Run("crypto fault", func(t *testing.T) {
+		sealer, err := auth.NewSealer(config.NewSecret(authTestKey32))
+		if err != nil {
+			t.Fatalf("NewSealer: %v", err)
+		}
+		_, openErr := sealer.Open([]byte("not-real-ciphertext"), make([]byte, 12), "user-id", "provider-id")
+		if openErr == nil {
+			t.Fatal("expected a decrypt fault against ciphertext that was never sealed")
+		}
+		assert5xxNoLeak(t, openErr)
+	})
+}
+
+// TestPatchWithAnExplicitEmptyTokenKeepsTheStoredOne closes the Minor finding:
+// {"token": ""} must be indistinguishable from an omitted token (the branch
+// is `replacing := p.Token != nil && *p.Token != ""`, auth/providers.go).
+func TestPatchWithAnExplicitEmptyTokenKeepsTheStoredOne(t *testing.T) {
+	svc, resolver := newSettingsTestAuthService(t, &toggledVerifier{}, &toggledUsage{})
+	h := settingsTestRouter(config.ModeHosted, svc)
+	cookie, _ := registerAndCookie(t, h, "niaj")
+
+	create := doAuth(t, h, http.MethodPost, "/api/settings/providers",
+		createProviderBody("github", "x", "github", "", "ghp_0123456789012345678901234567890123456789", nil), cookie)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d; body=%s", create.Code, create.Body.String())
+	}
+	created := decodeOne(t, create)
+	id := created["id"].(string)
+	attrsBefore := created["attributes"].(map[string]any)
+
+	patch := doAuth(t, h, http.MethodPatch, "/api/settings/providers/"+id,
+		`{"data":{"type":"userProviders","attributes":{"displayName":"renamed","token":""}}}`, cookie)
+	if patch.Code != http.StatusOK {
+		t.Fatalf("patch: status = %d; body=%s", patch.Code, patch.Body.String())
+	}
+
+	after := decodeOne(t, patch)["attributes"].(map[string]any)
+	if after["tokenLast4"] != attrsBefore["tokenLast4"] {
+		t.Fatalf("tokenLast4 changed: before=%v after=%v", attrsBefore["tokenLast4"], after["tokenLast4"])
+	}
+	if after["tokenSetAt"] != attrsBefore["tokenSetAt"] {
+		t.Fatalf("tokenSetAt changed: before=%v after=%v", attrsBefore["tokenSetAt"], after["tokenSetAt"])
+	}
+
+	registry, err := resolver.Resolve(context.Background(), identity.ForUser(mustUserID(t, h, cookie)))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if _, ok := registry.Get("github"); !ok {
+		t.Fatalf("provider %q not resolvable after patch", "github")
+	}
 }
 
 func TestSettingsRoutesAre404InStandalone(t *testing.T) {

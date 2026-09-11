@@ -99,14 +99,10 @@ func (s *server) createUserProvider(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, s.deps.Log, err)
 		return
 	}
-	// auth.CreateProvider rejects an empty token with an untyped error, which
-	// classify's fallback would otherwise turn into 500/GIT_FAILURE. The
-	// contract requires 422/VALIDATION_ERROR (api-contracts.md), so the shape
-	// is checked here, before the service is ever called.
-	if attrs.Token == "" {
-		s.validationError(w, "A token is required.")
-		return
-	}
+	// auth.CreateProvider itself rejects an empty token, wrapping
+	// auth.ErrInvalidInput, which writeProviderSettingsError maps to 422
+	// (api-contracts.md). No pre-check is needed here: the domain error
+	// already carries the distinction.
 	validate := true
 	if attrs.Validate != nil {
 		validate = *attrs.Validate
@@ -166,20 +162,27 @@ func (s *server) deleteUserProvider(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// writeProviderSettingsError separates the two error families the auth
-// provider layer produces: a typed *auth.Error carries its own wire code,
-// auth.ErrNotFound is the cross-user/unknown-id case (FR-4.2), and everything
-// else is a plain error from slug/kind/base-URL normalisation, which is a
-// request-shape problem and reports as VALIDATION_ERROR. Every plain error
-// returned by internal/auth's provider layer (auth/model.go, auth/providers.go)
-// is a fixed, value-free message: none interpolates a token, a base URL, or a
-// database message, so putting err.Error() in a client-visible detail here is
-// safe.
+// writeProviderSettingsError classifies an error from the auth provider
+// layer, and fails closed: only an error explicitly recognised as an
+// input-shape problem answers 422. Everything else — a database fault, a
+// provider outage, a crypto failure, or any other error internal/auth has
+// not (or not yet) classified — falls through to writeDomainError, whose
+// classify default arm answers 500 with a fixed generic message, never the
+// underlying error text.
+//
+//   - *auth.Error carries its own wire code (e.g. PROVIDER_UNAUTHORIZED,
+//     PROVIDER_SLUG_TAKEN, PROVIDER_IN_USE).
+//   - auth.ErrNotFound is the cross-user/unknown-id case (FR-4.2).
+//   - auth.ErrInvalidInput marks the four genuine request-shape failures
+//     (malformed slug, unknown kind, non-absolute base URL, missing token);
+//     those are the only plain errors ever surfaced to the client, and only
+//     because auth deliberately keeps their messages value-free.
+//   - anything else — including a plain, unclassified error this package
+//     has never seen before — is a server fault, not a client input error.
 func (s *server) writeProviderSettingsError(w http.ResponseWriter, err error) {
-	var ae *auth.Error
-	if errors.As(err, &ae) || errors.Is(err, auth.ErrNotFound) {
-		writeDomainError(w, s.deps.Log, err)
+	if errors.Is(err, auth.ErrInvalidInput) {
+		s.validationError(w, err.Error())
 		return
 	}
-	s.validationError(w, err.Error())
+	writeDomainError(w, s.deps.Log, err)
 }

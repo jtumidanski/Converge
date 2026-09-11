@@ -37,6 +37,14 @@ const (
 // request to answer 404, never 403, so resource existence is not disclosed.
 var ErrNotFound = errors.New("auth: not found")
 
+// ErrInvalidInput marks a plain error as a request-shape problem: the caller
+// sent something a validation rule rejects (a malformed slug, an unknown
+// kind, a non-absolute base URL, a missing token), as opposed to a database,
+// network, or crypto fault. The API layer wraps every source of a plain
+// error with this sentinel so it can fail closed: anything that does NOT
+// wrap ErrInvalidInput is treated as a server fault (5xx), never as 422.
+var ErrInvalidInput = errors.New("auth: invalid input")
+
 // Error is the typed domain error api.classify recognises with a single
 // errors.As arm, mirroring session.ReviewError.
 type Error struct {
