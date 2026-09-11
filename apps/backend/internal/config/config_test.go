@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -122,4 +123,146 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// minimalProviderEnv is the minimum standalone environment: one provider,
+// which loadProviders requires when the mode is standalone. Named
+// separately from the file's existing baseEnv, which loadProviders would
+// otherwise redeclare.
+func minimalProviderEnv() []string {
+	return []string{
+		"PROVIDERS__GH__TYPE=github",
+		"PROVIDERS__GH__TOKEN=t",
+	}
+}
+
+func TestModeDefaultsToStandalone(t *testing.T) {
+	for _, env := range [][]string{minimalProviderEnv(), append(minimalProviderEnv(), "CONVERGE_MODE=")} {
+		cfg, err := Load(env)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Mode != ModeStandalone {
+			t.Fatalf("Mode = %q, want %q", cfg.Mode, ModeStandalone)
+		}
+		if !cfg.SecretKey.IsZero() {
+			t.Fatal("standalone mode read CONVERGE_SECRET_KEY")
+		}
+		if cfg.DatabasePath != "" {
+			t.Fatalf("standalone DatabasePath = %q, want empty", cfg.DatabasePath)
+		}
+	}
+}
+
+func TestModeRejectsUnknownValue(t *testing.T) {
+	_, err := Load(append(minimalProviderEnv(), "CONVERGE_MODE=nonsense"))
+	var ce *Error
+	if !errors.As(err, &ce) || ce.Variable != "CONVERGE_MODE" {
+		t.Fatalf("Load error = %v, want a config.Error naming CONVERGE_MODE", err)
+	}
+}
+
+func TestStandaloneStillRequiresAProvider(t *testing.T) {
+	_, err := Load(nil)
+	var ce *Error
+	if !errors.As(err, &ce) || ce.Variable != "PROVIDERS__*" {
+		t.Fatalf("Load error = %v, want a config.Error naming PROVIDERS__*", err)
+	}
+}
+
+// testKey is 32 bytes of 0x01, base64 standard encoded. Not a credential:
+// it exists only so Load has something well-formed to accept.
+const testKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+
+func TestHostedIgnoresProvidersAndRecordsTheirNames(t *testing.T) {
+	cfg, err := Load([]string{
+		"CONVERGE_MODE=hosted",
+		"CONVERGE_SECRET_KEY=" + testKey,
+		"PROVIDERS__GH__TYPE=github",
+		"PROVIDERS__GH__TOKEN=t",
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Providers) != 0 {
+		t.Fatalf("hosted Providers = %v, want none", cfg.Providers)
+	}
+	want := []string{"PROVIDERS__GH__TOKEN", "PROVIDERS__GH__TYPE"}
+	if strings.Join(cfg.IgnoredProviderVars, ",") != strings.Join(want, ",") {
+		t.Fatalf("IgnoredProviderVars = %v, want %v", cfg.IgnoredProviderVars, want)
+	}
+}
+
+func TestHostedWithNoProvidersIsFine(t *testing.T) {
+	cfg, err := Load([]string{"CONVERGE_MODE=hosted", "CONVERGE_SECRET_KEY=" + testKey})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DatabasePath != "/data/converge.db" {
+		t.Fatalf("DatabasePath = %q, want /data/converge.db", cfg.DatabasePath)
+	}
+	if cfg.LoginSessionTTL != 720*time.Hour {
+		t.Fatalf("LoginSessionTTL = %v, want 720h", cfg.LoginSessionTTL)
+	}
+	if cfg.LoginIdleTTL != 168*time.Hour {
+		t.Fatalf("LoginIdleTTL = %v, want 168h", cfg.LoginIdleTTL)
+	}
+	if cfg.SecureCookies || cfg.TrustedProxy {
+		t.Fatal("SecureCookies/TrustedProxy should default to false")
+	}
+}
+
+func TestHostedRequiresAWellFormedSecretKey(t *testing.T) {
+	cases := []struct{ name, value string }{
+		{"missing", ""},
+		{"not base64", "!!!!not-base64!!!!"},
+		{"wrong length", "AQEB"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := []string{"CONVERGE_MODE=hosted"}
+			if tc.value != "" {
+				env = append(env, "CONVERGE_SECRET_KEY="+tc.value)
+			}
+			_, err := Load(env)
+			var ce *Error
+			if !errors.As(err, &ce) || ce.Variable != "CONVERGE_SECRET_KEY" {
+				t.Fatalf("Load error = %v, want a config.Error naming CONVERGE_SECRET_KEY", err)
+			}
+		})
+	}
+}
+
+// TestSecretsIncludeMasterKey proves the base64 key joins the redaction list,
+// so a key that leaks into an error string is scrubbed from every log line.
+func TestSecretsIncludeMasterKey(t *testing.T) {
+	cfg, err := Load([]string{"CONVERGE_MODE=hosted", "CONVERGE_SECRET_KEY=" + testKey})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	found := false
+	for _, s := range cfg.Secrets() {
+		if s == testKey {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Secrets() = %v, want it to contain the master key", cfg.Secrets())
+	}
+}
+
+func TestBoolVars(t *testing.T) {
+	cfg, err := Load([]string{
+		"CONVERGE_MODE=hosted", "CONVERGE_SECRET_KEY=" + testKey,
+		"CONVERGE_SECURE_COOKIES=true", "CONVERGE_TRUSTED_PROXY=TRUE",
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.SecureCookies || !cfg.TrustedProxy {
+		t.Fatalf("SecureCookies=%v TrustedProxy=%v, want both true", cfg.SecureCookies, cfg.TrustedProxy)
+	}
+	if _, err := Load([]string{"CONVERGE_MODE=hosted", "CONVERGE_SECRET_KEY=" + testKey, "CONVERGE_SECURE_COOKIES=yes"}); err == nil {
+		t.Fatal("CONVERGE_SECURE_COOKIES=yes should be rejected")
+	}
 }

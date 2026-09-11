@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -19,6 +20,25 @@ const (
 	KindGitHub Kind = "github"
 	KindGitLab Kind = "gitlab"
 )
+
+// Mode selects the shape of the process. The two modes are mutually
+// exclusive and fixed for the process lifetime (FR-1.6).
+type Mode string
+
+const (
+	// ModeStandalone is today's single-tenant shape: no accounts, no
+	// database, providers from PROVIDERS__*. It is the default so an existing
+	// deployment that upgrades and changes nothing is unaffected (FR-1.1).
+	ModeStandalone Mode = "standalone"
+	// ModeHosted adds accounts, per-user provider configuration in SQLite,
+	// and ownership on review sessions.
+	ModeHosted Mode = "hosted"
+)
+
+const defaultDatabasePath = "/data/converge.db"
+
+// secretKeyLen is the AES-256 key length CONVERGE_SECRET_KEY must decode to.
+const secretKeyLen = 32
 
 const (
 	defaultGitHubBaseURL = "https://api.github.com"
@@ -52,6 +72,23 @@ type Config struct {
 	GitCommandTimeout   time.Duration
 	ProviderTimeout     time.Duration
 	Providers           []ProviderConfig
+	// Mode is parsed before anything else in Load: it decides whether
+	// PROVIDERS__* is required and whether CONVERGE_SECRET_KEY is read.
+	Mode Mode
+	// DatabasePath, SecretKey, SecureCookies, TrustedProxy,
+	// LoginSessionTTL and LoginIdleTTL are populated only in hosted mode.
+	// In standalone mode they stay zero and no database file is ever
+	// created or opened (FR-1.5).
+	DatabasePath    string
+	SecretKey       Secret
+	SecureCookies   bool
+	TrustedProxy    bool
+	LoginSessionTTL time.Duration
+	LoginIdleTTL    time.Duration
+	// IgnoredProviderVars holds the names (never the values) of PROVIDERS__*
+	// variables present in hosted mode, so the caller can emit the single
+	// startup WARN that FR-1.3 requires.
+	IgnoredProviderVars []string
 }
 
 // Provider looks a provider up by ID.
@@ -66,11 +103,17 @@ func (c Config) Provider(id string) (ProviderConfig, bool) {
 
 // Secrets returns every token value, for log redaction.
 func (c Config) Secrets() []string {
-	out := make([]string, 0, len(c.Providers))
+	out := make([]string, 0, len(c.Providers)+1)
 	for _, p := range c.Providers {
 		if !p.Token.IsZero() {
 			out = append(out, p.Token.Reveal())
 		}
+	}
+	// The master key is registered alongside provider tokens so the
+	// redacting handler scrubs it too: a base64 key that ends up inside an
+	// error string is exactly the accident this list exists for.
+	if !c.SecretKey.IsZero() {
+		out = append(out, c.SecretKey.Reveal())
 	}
 	return out
 }
@@ -86,6 +129,9 @@ func Load(env []string) (Config, error) {
 	}
 	cfg := Config{LogFormat: "text"}
 	var err error
+	if cfg.Mode, err = modeVar(vars); err != nil {
+		return Config{}, err
+	}
 	if cfg.Port, err = intVar(vars, "APP_PORT", 8080, 1, 65535); err != nil {
 		return Config{}, err
 	}
@@ -116,7 +162,12 @@ func Load(env []string) (Config, error) {
 	if cfg.ProviderTimeout, err = durationVar(vars, "PROVIDER_TIMEOUT_SECONDS", 30, time.Second); err != nil {
 		return Config{}, err
 	}
-	if cfg.Providers, err = loadProviders(env); err != nil {
+	if cfg.Mode == ModeHosted {
+		if err = loadHosted(vars, &cfg); err != nil {
+			return Config{}, err
+		}
+	}
+	if cfg.Providers, cfg.IgnoredProviderVars, err = loadProviders(env, cfg.Mode == ModeStandalone); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
@@ -166,7 +217,80 @@ func levelVar(vars map[string]string, key string) (slog.Level, error) {
 	return 0, &Error{Variable: key, Reason: "must be one of debug, info, warn, error"}
 }
 
-func loadProviders(env []string) ([]ProviderConfig, error) {
+// loadProviders parses PROVIDERS__*. required is true only in standalone mode
+// (FR-1.2); in hosted mode the variables are ignored entirely and their names
+// are returned so the caller can warn once (FR-1.3). Names only — never
+// values, which are tokens.
+func modeVar(vars map[string]string) (Mode, error) {
+	switch Mode(strings.ToLower(stringVar(vars, "CONVERGE_MODE", string(ModeStandalone)))) {
+	case ModeStandalone:
+		return ModeStandalone, nil
+	case ModeHosted:
+		return ModeHosted, nil
+	default:
+		return "", &Error{Variable: "CONVERGE_MODE", Reason: "must be standalone or hosted"}
+	}
+}
+
+func boolVar(vars map[string]string, key string) (bool, error) {
+	raw := strings.ToLower(stringVar(vars, key, "false"))
+	switch raw {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, &Error{Variable: key, Reason: "must be true or false"}
+	}
+}
+
+// loadHosted fills the hosted-only fields. It is never called in standalone
+// mode, which is what keeps CONVERGE_SECRET_KEY unread and DatabasePath empty
+// there (FR-1.5).
+func loadHosted(vars map[string]string, cfg *Config) error {
+	cfg.DatabasePath = stringVar(vars, "CONVERGE_DATABASE_PATH", defaultDatabasePath)
+
+	raw := stringVar(vars, "CONVERGE_SECRET_KEY", "")
+	if raw == "" {
+		return &Error{Variable: "CONVERGE_SECRET_KEY", Reason: "is required in hosted mode"}
+	}
+	// Validated at parse time, not at first encrypt: an operator seeing a
+	// clear startup error beats a user seeing a 500.
+	key, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return &Error{Variable: "CONVERGE_SECRET_KEY", Reason: "must be base64 standard encoding"}
+	}
+	if len(key) != secretKeyLen {
+		return &Error{Variable: "CONVERGE_SECRET_KEY", Reason: "must decode to exactly 32 bytes"}
+	}
+	cfg.SecretKey = NewSecret(raw)
+
+	if cfg.SecureCookies, err = boolVar(vars, "CONVERGE_SECURE_COOKIES"); err != nil {
+		return err
+	}
+	if cfg.TrustedProxy, err = boolVar(vars, "CONVERGE_TRUSTED_PROXY"); err != nil {
+		return err
+	}
+	if cfg.LoginSessionTTL, err = durationVar(vars, "LOGIN_SESSION_TTL_HOURS", 720, time.Hour); err != nil {
+		return err
+	}
+	if cfg.LoginIdleTTL, err = durationVar(vars, "LOGIN_SESSION_IDLE_HOURS", 168, time.Hour); err != nil {
+		return err
+	}
+	return nil
+}
+
+func loadProviders(env []string, required bool) ([]ProviderConfig, []string, error) {
+	if !required {
+		var ignored []string
+		for _, kv := range env {
+			if k, _, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(k, providerPrefix) {
+				ignored = append(ignored, k)
+			}
+		}
+		sort.Strings(ignored)
+		return nil, ignored, nil
+	}
 	grouped := map[string]map[string]string{}
 	var names []string
 	for _, kv := range env {
@@ -177,11 +301,11 @@ func loadProviders(env []string) ([]ProviderConfig, error) {
 		rest := strings.TrimPrefix(k, providerPrefix)
 		idx := strings.LastIndex(rest, providerSep)
 		if idx <= 0 {
-			return nil, &Error{Variable: k, Reason: "expected PROVIDERS__<NAME>__<KEY>"}
+			return nil, nil, &Error{Variable: k, Reason: "expected PROVIDERS__<NAME>__<KEY>"}
 		}
 		name, key := rest[:idx], rest[idx+len(providerSep):]
 		if !providerNameRe.MatchString(name) {
-			return nil, &Error{Variable: k, Reason: "provider name must match [A-Z0-9_]+"}
+			return nil, nil, &Error{Variable: k, Reason: "provider name must match [A-Z0-9_]+"}
 		}
 		if grouped[name] == nil {
 			grouped[name] = map[string]string{}
@@ -190,19 +314,19 @@ func loadProviders(env []string) ([]ProviderConfig, error) {
 		grouped[name][key] = strings.TrimSpace(v)
 	}
 	if len(names) == 0 {
-		return nil, &Error{Variable: "PROVIDERS__*", Reason: "at least one provider must be configured"}
+		return nil, nil, &Error{Variable: "PROVIDERS__*", Reason: "at least one provider must be configured"}
 	}
 	sort.Strings(names)
 	out := make([]ProviderConfig, 0, len(names))
 	for _, name := range names {
 		p, err := buildProvider(name, grouped[name])
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out, nil
+	return out, nil, nil
 }
 
 func buildProvider(name string, keys map[string]string) (ProviderConfig, error) {
