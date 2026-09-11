@@ -32,8 +32,17 @@ export function FileDiff({ file }: FileDiffProps) {
         patch={diff}
         options={{
           diffStyle: "unified",
-          expandUnchanged: true,
+          // expandUnchanged: false is what produces the fold rows. The backend
+          // now sends 40 lines of context per hunk (diff.fileDiffContext), so
+          // there are real unmodified runs for the library to collapse and
+          // expand -- all client-side, with no second request (FR-34).
+          expandUnchanged: false,
           collapsedContextThreshold: 8,
+          expansionLineCount: 20,
+          // Word-level intra-line highlighting on paired modified lines (FR-35).
+          lineDiffType: "word",
+          // Our own sticky FileHeader owns the path, counts, and actions.
+          disableFileHeader: true,
           overflow: "scroll",
           // The resolved theme, never "system": "system" would make the diff
           // follow the OS instead of the app, and suppresses the shadow-root

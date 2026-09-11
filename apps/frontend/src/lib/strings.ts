@@ -90,4 +90,9 @@ export const strings = {
   markFileViewed: (name: string) => `Mark ${name} viewed`,
   collapseDirectory: (name: string) => `Collapse ${name}`,
   expandDirectory: (name: string) => `Expand ${name}`,
+  openInProvider: (providerName: string) => `Open in ${providerName}`,
+  pathCopied: "Path copied",
+  pathCopyFailed: "The path could not be copied.",
+  fileOfTotal: (index: number, total: number) => `File ${index} of ${total}`,
+  couldNotLoadFileDiff: "Could not load this file's diff",
 } as const;
