@@ -55,7 +55,7 @@ func newHarness(t *testing.T) *harness {
 	cleaner := NewCleaner(mirrors, ws, testLog())
 	store := session.NewStore(ws.Root(), 24*time.Hour, cleaner, testLog(), time.Now)
 	svc := NewService(Deps{
-		Providers: registry, Mirrors: mirrors, Workspaces: ws, Store: store,
+		Providers: provider.NewStaticResolver(registry), Mirrors: mirrors, Workspaces: ws, Store: store,
 		Applicator: NewCherryPickApplicator(runner, testLog()), Runner: runner, Log: testLog(),
 		SessionTTL: 24 * time.Hour, MaxConcurrentBuilds: 4, Now: time.Now,
 	})

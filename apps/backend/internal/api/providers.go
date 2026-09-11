@@ -19,8 +19,13 @@ func providerResource(p provider.GitProvider) jsonapi.Resource {
 	}}
 }
 
-func (s *server) listProviders(w http.ResponseWriter, _ *http.Request) {
-	all := s.deps.Providers.All()
+func (s *server) listProviders(w http.ResponseWriter, r *http.Request) {
+	registry, err := s.deps.Providers.Resolve(r.Context(), scopeFrom(r))
+	if err != nil {
+		writeDomainError(w, s.deps.Log, err)
+		return
+	}
+	all := registry.All()
 	out := make([]jsonapi.Resource, 0, len(all))
 	for _, p := range all {
 		out = append(out, providerResource(p))

@@ -17,7 +17,7 @@ import (
 // Deps are the router's collaborators.
 type Deps struct {
 	Service   *review.Service
-	Providers *provider.Registry
+	Providers provider.Resolver
 	Log       *slog.Logger
 	UI        fs.FS
 	UIPresent bool

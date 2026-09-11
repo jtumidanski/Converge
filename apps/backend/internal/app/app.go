@@ -49,6 +49,7 @@ type App struct {
 	Log        *slog.Logger
 	Runner     *gitx.ExecRunner
 	Registry   *provider.Registry
+	Resolver   provider.Resolver
 	Mirrors    *mirror.Cache
 	Workspaces *workspace.Manager
 	Store      *session.Store
@@ -259,6 +260,10 @@ func New(ctx context.Context, env []string) (*App, error) {
 		log.Info("provider configured", slog.String("provider", pc.ID), slog.String("kind", string(pc.Kind)), slog.String("base_url", loggableURL(pc.BaseURL)))
 	}
 
+	// Standalone supplies a static resolver over the one env-built registry.
+	// app.New replaces this with auth.ProviderResolver in hosted mode.
+	resolver := provider.NewStaticResolver(registry)
+
 	locks := &gitx.LockMap{}
 	// REPOSITORY_CACHE_ROOT flows straight from config into mirror.New: the
 	// cache never derives or defaults its own root.
@@ -272,7 +277,7 @@ func New(ctx context.Context, env []string) (*App, error) {
 	cleaner := review.NewCleaner(mirrors, workspaces, log)
 	store := session.NewStore(workspaces.Root(), cfg.SessionTTL, cleaner, log, time.Now)
 	service := review.NewService(review.Deps{
-		Providers: registry, Mirrors: mirrors, Workspaces: workspaces, Store: store,
+		Providers: resolver, Mirrors: mirrors, Workspaces: workspaces, Store: store,
 		Applicator: review.NewCherryPickApplicator(runner, log), Runner: runner, Log: log,
 		SessionTTL: cfg.SessionTTL, MaxConcurrentBuilds: cfg.MaxConcurrentBuilds, Now: time.Now,
 		Background: background,
@@ -282,5 +287,5 @@ func New(ctx context.Context, env []string) (*App, error) {
 		return nil, err
 	}
 	log.Info("converge starting", slog.String("git_version", version), slog.Int("providers", len(cfg.Providers)))
-	return &App{Config: cfg, Log: log, Runner: runner, Registry: registry, Mirrors: mirrors, Workspaces: workspaces, Store: store, Service: service, Background: background}, nil
+	return &App{Config: cfg, Log: log, Runner: runner, Registry: registry, Resolver: resolver, Mirrors: mirrors, Workspaces: workspaces, Store: store, Service: service, Background: background}, nil
 }

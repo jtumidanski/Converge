@@ -130,7 +130,7 @@ func newTestApp(t *testing.T) *app.App {
 	cleaner := review.NewCleaner(mirrors, ws, log)
 	store := session.NewStore(ws.Root(), 24*time.Hour, cleaner, log, time.Now)
 	svc := review.NewService(review.Deps{
-		Providers: registry, Mirrors: mirrors, Workspaces: ws, Store: store,
+		Providers: provider.NewStaticResolver(registry), Mirrors: mirrors, Workspaces: ws, Store: store,
 		Applicator: review.NewCherryPickApplicator(runner, log), Runner: runner, Log: log,
 		SessionTTL: 24 * time.Hour, MaxConcurrentBuilds: 2, Now: time.Now,
 	})
@@ -268,7 +268,7 @@ func TestRunBuildReadySessionMissingCombinedDiffIsFailure(t *testing.T) {
 		return time.Now()
 	}
 	a.Service = review.NewService(review.Deps{
-		Providers: a.Registry, Mirrors: a.Mirrors, Workspaces: a.Workspaces, Store: a.Store,
+		Providers: provider.NewStaticResolver(a.Registry), Mirrors: a.Mirrors, Workspaces: a.Workspaces, Store: a.Store,
 		Applicator: review.NewCherryPickApplicator(a.Runner, a.Log), Runner: a.Runner, Log: a.Log,
 		SessionTTL: 24 * time.Hour, MaxConcurrentBuilds: 2, Now: vanish,
 	})

@@ -39,9 +39,16 @@ func pageFrom(r *http.Request) provider.Page {
 }
 
 func (s *server) providerFor(w http.ResponseWriter, r *http.Request) (provider.GitProvider, bool) {
+	registry, err := s.deps.Providers.Resolve(r.Context(), scopeFrom(r))
+	if err != nil {
+		writeDomainError(w, s.deps.Log, err)
+		return nil, false
+	}
 	id := r.PathValue("provider")
-	p, ok := s.deps.Providers.Get(id)
+	p, ok := registry.Get(id)
 	if !ok {
+		// 404 rather than 403 even when the slug belongs to another user:
+		// resource existence is not disclosed (FR-4.2).
 		_ = jsonapi.WriteError(w, http.StatusNotFound, "NOT_FOUND", jsonapi.StatusTitle(http.StatusNotFound), "No provider is configured with that id.")
 		return nil, false
 	}

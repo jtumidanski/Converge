@@ -42,7 +42,7 @@ var listenAndServe = func(srv *http.Server) error {
 func buildDeps(application *app.App, ctx context.Context) api.Deps {
 	return api.Deps{
 		Service:         application.Service,
-		Providers:       application.Registry,
+		Providers:       application.Resolver,
 		Log:             application.Log,
 		UI:              ui.FS(),
 		UIPresent:       ui.Present(),

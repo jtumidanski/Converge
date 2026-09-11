@@ -13,6 +13,7 @@ import (
 
 	"github.com/jtumidanski/converge/internal/diff"
 	"github.com/jtumidanski/converge/internal/gitx"
+	"github.com/jtumidanski/converge/internal/identity"
 	"github.com/jtumidanski/converge/internal/mirror"
 	"github.com/jtumidanski/converge/internal/provider"
 	"github.com/jtumidanski/converge/internal/session"
@@ -34,7 +35,11 @@ const defaultMaxConcurrentBuilds = 4
 
 // Deps are the service's collaborators.
 type Deps struct {
-	Providers           *provider.Registry
+	// Providers resolves the registry for the calling scope. In standalone
+	// mode this is a static wrapper around the one env-built registry; in
+	// hosted mode it is auth.ProviderResolver, which builds and caches a
+	// registry per user from that user's encrypted configurations.
+	Providers           provider.Resolver
 	Mirrors             *mirror.Cache
 	Workspaces          *workspace.Manager
 	Store               *session.Store
@@ -111,7 +116,11 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (session.Session, 
 	if err != nil {
 		return session.Session{}, err
 	}
-	p, ok := s.deps.Providers.Get(in.ProviderID)
+	registry, err := s.deps.Providers.Resolve(ctx, identity.Standalone())
+	if err != nil {
+		return session.Session{}, fmt.Errorf("review: resolve providers: %w", err)
+	}
+	p, ok := registry.Get(in.ProviderID)
 	if !ok {
 		return session.Session{}, &InputError{
 			Code:    CodeInvalidProvider,
@@ -402,7 +411,11 @@ func (s *Service) logDropped(id string, stored session.Session, reason string) {
 // as it actually is (base SHA, resolved changes, stage) instead of on the
 // pre-build snapshot. It is only ever touched from the build's own goroutine.
 func (s *Service) build(ctx context.Context, live *session.Session) (session.Session, error) {
-	p, ok := s.deps.Providers.Get(live.ProviderID())
+	registry, err := s.deps.Providers.Resolve(ctx, identity.Standalone())
+	if err != nil {
+		return *live, fmt.Errorf("review: resolve providers: %w", err)
+	}
+	p, ok := registry.Get(live.ProviderID())
 	if !ok {
 		return *live, &session.ReviewError{
 			Code:    session.CodeProviderUnavailable,

@@ -194,7 +194,7 @@ func newServiceFixtureWith(t *testing.T, maxConcurrentBuilds int) *serviceFixtur
 	f := &serviceFixture{prov: p, src: src, ws: ws, watch: newLogWatch(),
 		app: &hookApplicator{delegate: NewCherryPickApplicator(runner, testLog())}}
 	f.svc = NewService(Deps{
-		Providers: registry, Mirrors: mirrors, Workspaces: ws, Store: store,
+		Providers: provider.NewStaticResolver(registry), Mirrors: mirrors, Workspaces: ws, Store: store,
 		Applicator: f.app, Runner: runner,
 		Log:        slog.New(&watchHandler{inner: testLog().Handler(), watch: f.watch}),
 		SessionTTL: 24 * time.Hour, MaxConcurrentBuilds: maxConcurrentBuilds, Now: f.now,

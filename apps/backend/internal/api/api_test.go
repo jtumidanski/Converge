@@ -89,11 +89,11 @@ func newAPIFixture(t *testing.T) *apiFixture {
 	cleaner := review.NewCleaner(mirrors, ws, log)
 	store := session.NewStore(ws.Root(), 24*time.Hour, cleaner, log, time.Now)
 	svc := review.NewService(review.Deps{
-		Providers: registry, Mirrors: mirrors, Workspaces: ws, Store: store,
+		Providers: provider.NewStaticResolver(registry), Mirrors: mirrors, Workspaces: ws, Store: store,
 		Applicator: review.NewCherryPickApplicator(runner, log), Runner: runner, Log: log,
 		SessionTTL: 24 * time.Hour, MaxConcurrentBuilds: 2, Now: time.Now,
 	})
-	h := NewRouter(Deps{Service: svc, Providers: registry, Log: log})
+	h := NewRouter(Deps{Service: svc, Providers: provider.NewStaticResolver(registry), Log: log})
 	return &apiFixture{handler: h, svc: svc, prov: p, src: src, store: store, base: base, sq: sq}
 }
 
@@ -462,7 +462,7 @@ func TestNewRouterStartsAndStopsSweeper(t *testing.T) {
 	}
 	cleaner := review.NewCleaner(mirrors, ws, log)
 	store := session.NewStore(ws.Root(), time.Hour, cleaner, log, time.Now)
-	svc := review.NewService(review.Deps{Providers: registry, Mirrors: mirrors, Workspaces: ws, Store: store, Log: log, Now: time.Now})
+	svc := review.NewService(review.Deps{Providers: provider.NewStaticResolver(registry), Mirrors: mirrors, Workspaces: ws, Store: store, Log: log, Now: time.Now})
 
 	id, err := session.NewID()
 	if err != nil {
@@ -479,7 +479,7 @@ func TestNewRouterStartsAndStopsSweeper(t *testing.T) {
 
 	buildCtx, cancel := context.WithCancel(context.Background())
 	_ = NewRouter(Deps{
-		Service: svc, Providers: registry, Log: log,
+		Service: svc, Providers: provider.NewStaticResolver(registry), Log: log,
 		BuildContext: buildCtx, Store: store, CleanupInterval: 10 * time.Millisecond,
 	})
 
@@ -532,7 +532,7 @@ func TestUIRouteServesRealIndexHTMLAndRejectsNonGET(t *testing.T) {
 		"index.html": &fstest.MapFile{Data: []byte("<html>real ui</html>")},
 	}
 
-	handler := NewRouter(Deps{Providers: registry, Log: log, UI: uiFS, UIPresent: true})
+	handler := NewRouter(Deps{Providers: provider.NewStaticResolver(registry), Log: log, UI: uiFS, UIPresent: true})
 
 	w := do(t, handler, http.MethodGet, "/", "")
 	if w.Code != http.StatusOK || w.Body.String() != "<html>real ui</html>" {
