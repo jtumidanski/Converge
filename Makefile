@@ -11,9 +11,17 @@ IMAGE     ?= $(if $(IMAGE_REPOSITORY),$(IMAGE_REPOSITORY),$(if $(CI_REGISTRY_IMA
 # Docker repository names must be lowercase; GitHub owner/repo often is not.
 IMAGE_LC  := $(shell printf '%s' '$(IMAGE)' | tr '[:upper:]' '[:lower:]')
 PLATFORM  ?= linux/amd64
+# How docker-build disposes of the result. `--load` writes into a local Docker
+# image store, which is right for a developer machine and for the docker:dind
+# job in .gitlab-ci.yml. The Forgejo runners are host mode -- the pod IS the job
+# environment and has no Docker daemon -- so buildx there drives a remote
+# BuildKit worker and .forgejo/workflows/ci.yml overrides this with
+# `--output=type=cacheonly` (build check) or `--push` (publish; with a remote
+# worker the build and the push are one operation).
+DOCKER_OUTPUT ?= --load
 NPM       := export NVM_DIR="$$HOME/.nvm" && [ -s "$$NVM_DIR/nvm.sh" ] && . "$$NVM_DIR/nvm.sh" >/dev/null && nvm use 22 >/dev/null; npm
 
-.PHONY: help version lint test test-integration build docker-build docker-push release-github dev clean
+.PHONY: help version lint test test-integration build docker-build docker-push dev clean
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
@@ -44,15 +52,15 @@ docker-build: ## Build the container image
 		--tag $(IMAGE_LC):$(VERSION) \
 		--tag $(IMAGE_LC):$(GIT_SHA) \
 		$(if $(filter 1,$(MAINLINE)),--tag $(IMAGE_LC):latest,) \
-		--load \
+		$(DOCKER_OUTPUT) \
 		$(ROOT)
 
+# Needs a local Docker daemon holding the images docker-build loaded, so it is
+# for developer machines and the docker:dind job in .gitlab-ci.yml. The forge
+# workflow does not call it: it pushes from docker-build with
+# DOCKER_OUTPUT=--push, because its BuildKit worker is remote.
 docker-push: ## Push the image tags (registry from CI variables)
 	VERSION=$(VERSION) GIT_SHA=$(GIT_SHA) $(ROOT)/tools/docker-push.sh
-
-release-github: ## Attach dist artifacts to the current tag's GitHub Release
-	gh release create $(VERSION) $(ROOT)/dist/*.tar.gz --generate-notes || \
-		gh release upload $(VERSION) $(ROOT)/dist/*.tar.gz --clobber
 
 dev: ## Run the backend and the Vite dev server together
 	cd $(BACKEND) && go run ./cmd/converge & \

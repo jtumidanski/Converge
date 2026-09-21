@@ -1,0 +1,263 @@
+name: ci
+
+# Forge port of .github/workflows/ci.yml (Phase 5, task B5). Forgejo prefers
+# .forgejo/workflows and ignores .github/workflows entirely when it is present,
+# so the frozen GitHub file carries no risk of double-running.
+#
+# Departures from the original, all forced by the platform:
+#
+#   1. `concurrency:` is gone. Forgejo 15.0.9 parses but ignores it (measured
+#      2026-09-20, k3s Phase 5 spec), so leaving it in would document a
+#      cancellation that never happens. Overlapping runs are harmless here:
+#      nothing in this workflow pushes to git, and two publishes of the same
+#      SHA produce the same tags.
+#   2. `permissions:` is gone. It only has meaning for a GitHub Actions token;
+#      the forge grants job tokens repository scope and the two things this
+#      workflow authenticates to -- the registry and the release API -- use
+#      explicit secrets (ZOT_CI_PASSWORD, FORGE_PUSH_TOKEN), not the job token.
+#   3. `docker/setup-qemu-action` is gone and buildx runs with `driver: remote`.
+#      The Forgejo runners are host mode -- the pod IS the job environment and
+#      there is no Docker daemon in it -- so the default docker-container
+#      driver has nothing to talk to, and there is no local daemon to register
+#      binfmt handlers with either. Cross-architecture is not lost: the release
+#      tarballs are cross-compiled by tools/build-backend.sh (CGO_ENABLED=0),
+#      and the image was already single-platform (PLATFORM=linux/amd64).
+#   4. `make docker-build`'s `--load` cannot be used, for the same reason:
+#      there is no local image store to load into. The Makefile's new
+#      `DOCKER_OUTPUT` variable is set below to `--output=type=cacheonly` for
+#      the build check and `--push` for the publish. With a remote BuildKit
+#      worker the build and the push are one operation, which is why there is
+#      no separate `make docker-push` step here; `docker push` needs a local
+#      daemon holding the image. The `docker-push` target and
+#      tools/docker-push.sh are kept in the tree because .gitlab-ci.yml still
+#      drives them through docker:dind, where they do work.
+#   5. GHCR and `make release-github` are gone. Images go to
+#      registry.tumidanski (zot) and the release is created on the forge by
+#      actions/forgejo-release. The Makefile's `release-github` target is
+#      deleted: there is no GitHub release path any more.
+#   6. actions/upload-artifact is replaced by forgejo/upload-artifact --
+#      upstream throws GHESNotSupportedError against Forgejo (Phase 3a).
+#   7. Toolchain caches move to fixed absolute paths under /work/ci-cache; see
+#      the block below.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+# Every job below pins its toolchain caches to fixed absolute paths under
+# /work/ci-cache, set at JOB level, and clears them as its first step after
+# checkout. Two rules, both load-bearing on the host executor:
+#
+#   1. Fixed absolute paths, not ${{ github.workspace }}/...: the host executor
+#      gives every job a unique workspace directory, and the cache entry's
+#      version is derived from the cached paths, so a workspace-relative cache
+#      can never be restored from the Forgejo cache server. Set at job level,
+#      never workflow level -- at workflow level ${{ github.workspace }}
+#      expands to the empty string.
+#
+#   2. Host-mode runners share /work (a per-pod emptyDir) between jobs, so a
+#      module cache left behind by a previous job would silently warm this one.
+#      Clear it first: the Forgejo cache server is then the only warm path, and
+#      the directory stays bounded to a single build's worth of data.
+#
+# setup-go's own `cache:` is off (`cache: false`) and setup-node is given no
+# `cache:` at all; restoring is an explicit actions/cache step instead. That is
+# deliberate and not interchangeable: this forge lower-cases the key on restore,
+# setup-go/setup-node compare the returned key to their primary key with `===`,
+# conclude they missed, and re-upload the whole cache in their post step on
+# every job -- and nothing here supersedes a key, so each save retains a new
+# blob on the cache PVC. actions/cache compares case-insensitively and skips
+# the save on a hit. The keys below are all-lowercase for the same reason, so
+# `runner.os` (which renders `Linux`) is not used in them.
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      GOMODCACHE: /work/ci-cache/go/mod
+      GOCACHE: /work/ci-cache/go/build
+      # `make lint` runs golangci-lint, whose own cache defaults to
+      # $HOME/.cache/golangci-lint, and $HOME persists between jobs on a
+      # host-mode runner -- that would make a job's result depend on which of
+      # the runners it landed on.
+      GOLANGCI_LINT_CACHE: /work/ci-cache/golangci-lint
+      npm_config_cache: /work/ci-cache/npm
+      PLATFORM: linux/amd64
+      # No local image store to --load into; a PR build is a compile check.
+      DOCKER_OUTPUT: --output=type=cacheonly
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # tools/version.sh needs tags
+
+      - name: Reset toolchain caches
+        run: rm -rf /work/ci-cache
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        id: go
+        with:
+          go-version-file: apps/backend/go.mod
+          cache: false          # see the block above for why
+
+      # Keyed on apps/backend/go.sum: the repository has exactly one Go module
+      # and it lives there, so `**/go.sum` would only add testdata noise.
+      - name: Cache Go build and module caches
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            /work/ci-cache/go
+            /work/ci-cache/golangci-lint
+          key: go-linux-x64-${{ steps.go.outputs.go-version }}-${{ hashFiles('apps/backend/go.sum') }}
+          restore-keys: |
+            go-linux-x64-${{ steps.go.outputs.go-version }}-
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Cache npm cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: /work/ci-cache/npm
+          key: npm-linux-x64-22-${{ hashFiles('apps/frontend/package-lock.json') }}
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          driver: remote
+          endpoint: tcp://buildkitd.buildkit.svc.cluster.local:1234
+          driver-opts: |
+            cacert=/etc/buildkit-client/ca.pem
+            cert=/etc/buildkit-client/cert.pem
+            key=/etc/buildkit-client/key.pem
+
+      - name: Install frontend dependencies
+        working-directory: apps/frontend
+        run: npm ci
+
+      - name: Lint
+        run: make lint
+
+      - name: Unit tests
+        run: make test
+
+      - name: Integration tests
+        run: make test-integration
+
+      - name: Build
+        run: make build
+
+      - name: Docker build
+        run: make docker-build
+
+      # actions/upload-artifact@v4+ throws GHESNotSupportedError against
+      # Forgejo; the forgejo/ fork is the fleet's replacement.
+      - name: Upload artifacts
+        uses: forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: converge-dist-${{ github.sha }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: validate
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      GOMODCACHE: /work/ci-cache/go/mod
+      GOCACHE: /work/ci-cache/go/build
+      npm_config_cache: /work/ci-cache/npm
+      PLATFORM: linux/amd64
+      # MAINLINE=1 is what adds the `:latest` tag, in both the Makefile's
+      # docker-build and tools/docker-push.sh. The GitHub original set it on
+      # every push, branch or tag; kept as-is.
+      MAINLINE: "1"
+      IMAGE_REPOSITORY: registry.tumidanski/jtumidanski/converge
+      # Remote BuildKit: build and push are one operation.
+      DOCKER_OUTPUT: --push
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Reset toolchain caches
+        run: rm -rf /work/ci-cache
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        id: go
+        with:
+          go-version-file: apps/backend/go.mod
+          cache: false          # see the block above for why
+
+      - name: Cache Go build and module caches
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: /work/ci-cache/go
+          key: go-linux-x64-${{ steps.go.outputs.go-version }}-${{ hashFiles('apps/backend/go.sum') }}
+          restore-keys: |
+            go-linux-x64-${{ steps.go.outputs.go-version }}-
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Cache npm cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: /work/ci-cache/npm
+          key: npm-linux-x64-22-${{ hashFiles('apps/frontend/package-lock.json') }}
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          driver: remote
+          endpoint: tcp://buildkitd.buildkit.svc.cluster.local:1234
+          driver-opts: |
+            cacert=/etc/buildkit-client/ca.pem
+            cert=/etc/buildkit-client/cert.pem
+            key=/etc/buildkit-client/key.pem
+
+      - name: Log in to the registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: registry.tumidanski
+          username: ci
+          password: ${{ secrets.ZOT_CI_PASSWORD }}
+
+      - name: Build artifacts
+        run: make build
+
+      # DOCKER_OUTPUT=--push above: this one step builds and pushes
+      # registry.tumidanski/jtumidanski/converge at :$(VERSION), :$(GIT_SHA)
+      # and, because MAINLINE=1, :latest.
+      - name: Build and push image
+        run: make docker-build
+
+      # `git describe ... ^` has no previous tag to find on a first release, so
+      # `|| true` leaves $prev empty and the log below covers the whole history.
+      # That is correct for a first release and self-correcting afterwards.
+      - name: Release notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          prev=$(git describe --tags --abbrev=0 "${{ github.ref_name }}^" 2>/dev/null || true)
+          { echo "## ${{ github.ref_name }}"; echo; git log --no-merges --pretty='- %s (%h)' ${prev:+$prev..}${{ github.ref_name }}; } > /tmp/notes.md
+          mkdir -p /tmp/release && cp dist/*.tar.gz /tmp/release/
+
+      # `release-notes-file` is what carries the notes into the body; without it
+      # the action posts an empty body. `sha` is passed explicitly because the
+      # action's default is a `forge.*` context expression and an empty SHA makes
+      # it delete the tag. `title` is set because the action does `: ${TITLE:=$TAG}`
+      # on empty, and `prerelease` because it would otherwise be inferred.
+      - uses: actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          direction: upload
+          url: https://git.tumidanski
+          repo: ${{ github.repository }}
+          tag: ${{ github.ref_name }}
+          sha: ${{ github.sha }}
+          title: ${{ github.ref_name }}
+          release-dir: /tmp/release
+          release-notes-file: /tmp/notes.md
+          prerelease: false
+          token: ${{ secrets.FORGE_PUSH_TOKEN }}
