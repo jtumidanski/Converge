@@ -241,7 +241,10 @@ jobs:
         run: |
           prev=$(git describe --tags --abbrev=0 "${{ github.ref_name }}^" 2>/dev/null || true)
           { echo "## ${{ github.ref_name }}"; echo; git log --no-merges --pretty='- %s (%h)' ${prev:+$prev..}${{ github.ref_name }}; } > /tmp/notes.md
-          mkdir -p /tmp/release && cp dist/*.tar.gz /tmp/release/
+          # Runner pods are long-lived and share their filesystem across jobs;
+          # clear /tmp/release first so a stale tarball from a previous
+          # release isn't re-uploaded alongside this one.
+          rm -rf /tmp/release && mkdir -p /tmp/release && cp dist/*.tar.gz /tmp/release/
 
       # `release-notes-file` is what carries the notes into the body; without it
       # the action posts an empty body. `sha` is passed explicitly because the
