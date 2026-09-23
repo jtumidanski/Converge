@@ -25,7 +25,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
       -ldflags "-s -w -X github.com/jtumidanski/converge/internal/buildinfo.Version=${VERSION}" \
       -o /out/converge-cli ./cmd/converge-cli
 
-FROM alpine:3.22
+FROM alpine:3.24
 RUN apk add --no-cache git ca-certificates tini && \
     adduser -D -u 10001 converge && \
     mkdir -p /data/repositories /data/workspaces && \
