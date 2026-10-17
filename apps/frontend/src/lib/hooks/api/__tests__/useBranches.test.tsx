@@ -5,7 +5,7 @@ import { queryWrapper } from "@/test/render";
 import { useBranches } from "@/lib/hooks/api/useBranches";
 import type { Branch } from "@/types/models/branch";
 
-beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
+beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 

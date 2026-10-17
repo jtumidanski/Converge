@@ -3,7 +3,7 @@ import { http, HttpResponse, server } from "@/test/server";
 import { apiDelete, apiGet, apiGetText, apiPost } from "@/lib/api/client";
 import { ApiError, isApiError, messageFor } from "@/lib/api/errors";
 
-beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
+beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 

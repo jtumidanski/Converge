@@ -14,7 +14,7 @@ import {
   useReviews,
 } from "@/lib/hooks/api/useReviews";
 
-beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
+beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 afterEach(() => {
   server.resetHandlers();
   vi.useRealTimers();
