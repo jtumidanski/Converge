@@ -5,7 +5,7 @@ import { errorDoc, http, HttpResponse, listDoc, oneDoc, server } from "@/test/se
 import { queryWrapper } from "@/test/render";
 import { repositoryKeys, useRepositories, useRepository } from "@/lib/hooks/api/useRepositories";
 
-beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
+beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 

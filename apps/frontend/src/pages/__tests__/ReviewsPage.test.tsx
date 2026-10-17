@@ -79,7 +79,7 @@ function renderPage() {
   );
 }
 
-beforeAll(() => server.listen({ onUnhandledRequest: "bypass" }));
+beforeAll(() => server.listen({ onUnhandledFrame: "bypass" }));
 afterEach(() => {
   server.resetHandlers();
   localStorage.clear();
