@@ -55,5 +55,10 @@
     "typescript-eslint": "^8.69.0",
     "vite": "^8.2.2",
     "vitest": "^5.0.4"
+  },
+  "overrides": {
+    "@typeschema/effect": {
+      "effect": "^4.0.0"
+    }
   }
 }
