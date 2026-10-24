@@ -1,4 +1,24 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["local>renovate/presets", "local>renovate/presets:go-toolchain"]
+  "extends": ["local>renovate/presets", "local>renovate/presets:go-toolchain"],
+  "automergeType": "pr",
+  "platformAutomerge": true,
+  "packageRules": [
+    {
+      "description": "Automerge patch and minor updates once CI passes. platformAutomerge hands the merge to the forge, whose branch protection on main requires ci / validate.",
+      "matchUpdateTypes": ["patch", "minor"],
+      "automerge": true
+    },
+    {
+      "description": "Majors are never unattended.",
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
+    {
+      "description": "Re-assert the go-toolchain preset's never-automerge: the patch/minor rule above would otherwise override it. Last so it wins.",
+      "matchDatasources": ["golang-version", "docker"],
+      "matchPackageNames": ["go", "golang"],
+      "automerge": false
+    }
+  ]
 }
